@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paytracker
+      POSTGRES_USER: paytracker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?укажи POSTGRES_PASSWORD в .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paytracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://paytracker:${POSTGRES_PASSWORD:?укажи POSTGRES_PASSWORD в .env}@db:5432/paytracker
+      SESSION_SECRET: ${SESSION_SECRET:?укажи SESSION_SECRET в .env}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  db_data:
+  uploads_data:
