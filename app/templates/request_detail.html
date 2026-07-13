@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}{{ req.number }} — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests">&larr; К списку заявок</a>
+<h2>{{ req.number }} — {{ req.title }}
+    <span class="status-pill status-{{ req.status.value }}">{{ req.status.value }}</span>
+</h2>
+
+<div class="card">
+    <p><b>Тип:</b> {{ req.type.value }}</p>
+    <p><b>Заказчик:</b> {{ req.created_by.full_name }} | <b>Подразделение:</b> {{ req.division.name }}</p>
+    <p><b>Исполнитель:</b> {{ req.executor.full_name if req.executor else "не назначен" }}</p>
+    <p><b>Ожидаемый срок:</b> {{ req.expected_date or "—" }}</p>
+    {% if req.description %}<p><b>Описание:</b> {{ req.description }}</p>{% endif %}
+
+    {% if req.payment_details %}
+    <hr>
+    <h4>Платёж</h4>
+    <p><b>Цель платежа:</b> {{ req.payment_details.purpose }}</p>
+    <p><b>Назначение платежа:</b> {{ req.payment_details.payment_purpose }}</p>
+    <p><b>Сумма:</b> {{ req.payment_details.amount }} {{ req.payment_details.currency.code }}</p>
+    {% if req.payment_details.rate_at_request %}
+    <p><b>Курс ЦБ на дату заявки:</b> {{ req.payment_details.rate_at_request }}
+        (≈ {{ req.payment_details.amount_rub_at_request }} ₽)
+        <i>* предварительно, информационно</i></p>
+    {% endif %}
+    {% if req.payment_details.rate_at_execution %}
+    <p><b>Курс ЦБ на дату исполнения:</b> {{ req.payment_details.rate_at_execution }}
+        (= {{ req.payment_details.amount_rub_at_execution }} ₽)</p>
+    {% endif %}
+    <p><b>Получатель:</b> {{ req.payment_details.recipient_name }}, {{ req.payment_details.recipient_country }}</p>
+    <p><b>Банк:</b> {{ req.payment_details.recipient_bank }},
+       {{ req.payment_details.account_number_iban }}, SWIFT {{ req.payment_details.swift_bic }}</p>
+    <p><b>Способ оплаты:</b> {{ req.payment_details.payment_method.value }}
+       {% if req.payment_details.agent %} через агента {{ req.payment_details.agent.code }}{% endif %}</p>
+    {% endif %}
+
+    {% if req.purchase_details %}
+    <hr>
+    <h4>Закупка</h4>
+    <p><b>Компания-покупатель:</b> {{ req.purchase_details.buyer_company.name }}</p>
+    <p><b>Способ оплаты:</b> {{ req.purchase_details.payment_method.value }}</p>
+    {% if req.purchase_details.markup_notes %}<p><b>Наценка/комментарий:</b> {{ req.purchase_details.markup_notes }}</p>{% endif %}
+    {% if req.purchase_details.delivery_date %}<p><b>Дата поставки:</b> {{ req.purchase_details.delivery_date }}</p>{% endif %}
+    {% endif %}
+
+    {% if req.consultation_details %}
+    <hr>
+    <h4>Консультация</h4>
+    <p>{{ req.consultation_details.question_description }}</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>Действия</h3>
+
+    {% if can_submit %}
+    <form method="post" action="/requests/{{ req.id }}/submit" style="display:inline">
+        <button type="submit">Подать заявку</button>
+    </form>
+    {% endif %}
+
+    {% if can_assign %}
+    <form method="post" action="/requests/{{ req.id }}/assign">
+        <label>Назначить исполнителя</label>
+        <select name="executor_id">
+            {% for e in executors %}<option value="{{ e.id }}">{{ e.full_name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Назначить и взять в работу</button>
+    </form>
+    <form method="post" action="/requests/{{ req.id }}/reject">
+        <label>Причина отклонения</label>
+        <textarea name="reason" rows="2" required></textarea>
+        <button type="submit" class="danger">Отклонить заявку</button>
+    </form>
+    {% endif %}
+
+    {% if can_acknowledge_rejection %}
+    <p><b>Причина отклонения:</b> {{ rejection_reason }}</p>
+    <form method="post" action="/requests/{{ req.id }}/acknowledge_rejection">
+        <button type="submit" class="secondary">Ознакомлен с причиной отклонения</button>
+    </form>
+    {% endif %}
+
+    {% if can_request_clarification %}
+    <form method="post" action="/requests/{{ req.id }}/request_clarification">
+        <label>Вопрос Заказчику</label>
+        <textarea name="question" rows="2" required></textarea>
+        <button type="submit">Запросить уточнение</button>
+    </form>
+    {% endif %}
+
+    {% if can_answer_clarification %}
+    <form method="post" action="/requests/{{ req.id }}/answer_clarification">
+        <label>Ответ Исполнителю</label>
+        <textarea name="answer" rows="2" required></textarea>
+        <button type="submit">Ответ предоставлен</button>
+    </form>
+    {% endif %}
+
+    {% if can_mark_done %}
+    <form method="post" action="/requests/{{ req.id }}/mark_done" style="display:inline">
+        <button type="submit">Исполнение завершено</button>
+    </form>
+    {% endif %}
+
+    {% if can_confirm_execution %}
+    <form method="post" action="/requests/{{ req.id }}/confirm_execution" style="display:inline"
+          onsubmit="return confirm('Это неотменяемое действие. Подтвердить получение платежа/исполнения?');">
+        <button type="submit">Подтвердить исполнение</button>
+    </form>
+    {% endif %}
+
+    {% if can_confirm_documents %}
+    <form method="post" action="/requests/{{ req.id }}/confirm_documents" style="display:inline">
+        <button type="submit">Комплект подтверждён — закрыть заявку</button>
+    </form>
+    {% endif %}
+
+    {% if not can_submit and not can_assign and not can_acknowledge_rejection and not can_request_clarification
+        and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_confirm_documents %}
+    <p><i>Доступных действий нет.</i></p>
+    {% endif %}
+</div>
+
+{% if can_upload_document %}
+<div class="card">
+    <h3>Документы</h3>
+    {% if missing_documents %}
+    <p><b>Не хватает обязательных документов:</b>
+        {% for d in missing_documents %}{{ d.code }} ({{ d.name }}){{ ", " if not loop.last }}{% endfor %}
+    </p>
+    {% endif %}
+    <ul>
+        {% for doc in req.documents %}
+        <li>{{ doc.document_type_code }} — {{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})</li>
+        {% else %}
+        <li>Документов пока нет.</li>
+        {% endfor %}
+    </ul>
+    <form method="post" action="/requests/{{ req.id }}/documents" enctype="multipart/form-data">
+        <label>Тип документа</label>
+        <select name="document_type_code">
+            {% for dt in doc_type_options %}<option value="{{ dt.code }}">{{ dt.code }} — {{ dt.name }}</option>{% endfor %}
+        </select>
+        <label>Файл</label>
+        <input type="file" name="file" required>
+        <button type="submit">Загрузить</button>
+    </form>
+</div>
+{% endif %}
+
+<div class="card">
+    <h3>Комментарии</h3>
+    {% for c in req.comments %}
+    <div class="comment">
+        <div class="meta">{{ c.author.full_name }} — {{ c.created_at.strftime("%d.%m.%Y %H:%M") }}</div>
+        {{ c.content }}
+    </div>
+    {% else %}
+    <p><i>Комментариев пока нет.</i></p>
+    {% endfor %}
+    <form method="post" action="/requests/{{ req.id }}/comments">
+        <textarea name="content" rows="2" placeholder="Написать комментарий..." required></textarea>
+        <button type="submit">Отправить</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>История статусов</h3>
+    {% for h in req.status_history %}
+    <div class="history-item">
+        {{ h.changed_at.strftime("%d.%m.%Y %H:%M") }} — {{ h.changed_by.full_name }}:
+        {{ h.from_status.value if h.from_status else "—" }} → {{ h.to_status.value }}
+        {% if h.comment %}<i>({{ h.comment }})</i>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+{% endblock %}

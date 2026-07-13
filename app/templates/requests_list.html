@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Заявки — PayTracker{% endblock %}
+{% block content %}
+<h2>Заявки</h2>
+<a class="btn" href="/requests/new">+ Новая заявка</a>
+
+<table>
+    <thead>
+        <tr>
+            <th>№</th><th>Тип</th><th>Название</th><th>Статус</th>
+            <th>Заказчик</th><th>Исполнитель</th><th>Подразделение</th><th>Срок</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for r in requests %}
+        <tr onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
+            <td>{{ r.number }}</td>
+            <td>{{ r.type.value }}</td>
+            <td>{{ r.title }}</td>
+            <td><span class="status-pill status-{{ r.status.value }}">{{ r.status.value }}</span></td>
+            <td>{{ r.created_by.full_name }}</td>
+            <td>{{ r.executor.full_name if r.executor else "—" }}</td>
+            <td>{{ r.division.name }}</td>
+            <td>{{ r.expected_date or "—" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">Заявок пока нет.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
