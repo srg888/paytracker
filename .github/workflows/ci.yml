@@ -1,0 +1,51 @@
+name: Проверка миграций БД
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: paytracker
+          POSTGRES_PASSWORD: paytracker
+          POSTGRES_DB: paytracker
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paytracker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://paytracker:paytracker@localhost:5432/paytracker
+
+    steps:
+      - name: Скачать код репозитория
+        uses: actions/checkout@v4
+
+      - name: Установить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Накатить миграции (upgrade)
+        run: alembic upgrade head
+
+      - name: Откатить миграции (downgrade) — проверка обратимости
+        run: alembic downgrade base
+
+      - name: Накатить миграции ещё раз — ловит баги вроде неудалённых ENUM-типов
+        run: alembic upgrade head
+
+      - name: Проверить, что все модели импортируются без ошибок
+        run: python -c "from app.models import Base; from sqlalchemy.orm import configure_mappers; configure_mappers(); print('OK,', len(Base.metadata.tables), 'таблиц')"
