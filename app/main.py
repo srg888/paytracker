@@ -2,7 +2,7 @@ import os
 import uuid
 from datetime import date, datetime
 
-from fastapi import Depends, FastAPI, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -29,6 +29,12 @@ from app.services.roles import is_acting_rukovoditel
 APP_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 
+# Лимиты из заявки на платежи.md / заявки консультации.md: "лимит на 1 файл - 50 Мб,
+# лимит на все файлы - 500 Мб. Максимальное количество файлов - 50"
+MAX_FILE_SIZE = 50 * 1024 * 1024
+MAX_TOTAL_SIZE = 500 * 1024 * 1024
+MAX_FILES = 50
+
 app = FastAPI(title="PayTracker MVP")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "dev-secret-change-me"))
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
@@ -46,6 +52,55 @@ def render(request: Request, template: str, db: Session, **context):
             **context,
         },
     )
+
+
+async def _save_generic_attachments(
+    db: Session, request_id: int, files: list[UploadFile], uploaded_by_id: int, existing_count: int, existing_total_size: int
+) -> list[str]:
+    """Сохраняет файлы, приложенные Заказчиком (document_type_code=None — не входят
+    в формальный чек-лист закрывающих документов). Возвращает список предупреждений
+    о файлах, которые не были сохранены из-за превышения лимитов."""
+    warnings: list[str] = []
+    count = existing_count
+    total_size = existing_total_size
+
+    req_dir = os.path.join(UPLOAD_DIR, str(request_id))
+    os.makedirs(req_dir, exist_ok=True)
+
+    for file in files:
+        if not file or not file.filename:
+            continue
+        if count >= MAX_FILES:
+            warnings.append(f"{file.filename}: превышен лимит в {MAX_FILES} файлов, не загружен")
+            continue
+        content = await file.read()
+        size = len(content)
+        if size > MAX_FILE_SIZE:
+            warnings.append(f"{file.filename}: превышен лимит 50 Мб на файл, не загружен")
+            continue
+        if total_size + size > MAX_TOTAL_SIZE:
+            warnings.append(f"{file.filename}: превышен общий лимит 500 Мб на заявку, не загружен")
+            continue
+
+        safe_name = f"{uuid.uuid4().hex}_{file.filename}"
+        dest_path = os.path.join(req_dir, safe_name)
+        with open(dest_path, "wb") as f:
+            f.write(content)
+
+        db.add(
+            RequestDocument(
+                request_id=request_id,
+                document_type_code=None,
+                file_name=file.filename,
+                storage_path=dest_path,
+                file_size_bytes=size,
+                uploaded_by_id=uploaded_by_id,
+            )
+        )
+        count += 1
+        total_size += size
+
+    return warnings
 
 
 # --- Auth (упрощённая для MVP — без пароля, выбор пользователя) ---
@@ -103,20 +158,21 @@ def requests_list(request: Request, db: Session = Depends(get_db)):
     return render(request, "requests_list.html", db, requests=requests_)
 
 
-@app.get("/requests/new")
-def new_request_form(request: Request, db: Session = Depends(get_db)):
-    user = require_login(request, db)
-    if not user:
-        return RedirectResponse("/login")
-    return render(
-        request,
-        "request_new.html",
-        db,
+def _reference_data(db: Session) -> dict:
+    return dict(
         divisions=db.query(Division).all(),
         currencies=db.query(Currency).all(),
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
         buyer_companies=db.query(BuyerCompany).filter(BuyerCompany.is_active.is_(True)).all(),
     )
+
+
+@app.get("/requests/new")
+def new_request_form(request: Request, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    return render(request, "request_new.html", db, editing=False, req=None, **_reference_data(db))
 
 
 def _next_request_number(db: Session) -> str:
@@ -125,7 +181,7 @@ def _next_request_number(db: Session) -> str:
 
 
 @app.post("/requests/new")
-def create_request(
+async def create_request(
     request: Request,
     db: Session = Depends(get_db),
     type: str = Form(...),
@@ -154,6 +210,7 @@ def create_request(
     delivery_date: str = Form(""),
     # consultation fields
     question_description: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
 ):
     user = require_login(request, db)
     if not user:
@@ -212,9 +269,140 @@ def create_request(
     elif type == RequestType.CONSULTATION.value:
         req.consultation_details = ConsultationRequest(question_description=question_description)
 
+    db.flush()  # нужен req.id для сохранения вложений
+    warnings = await _save_generic_attachments(db, req.id, files, user.id, existing_count=0, existing_total_size=0)
+
     db.commit()
     flash(request, f"Заявка {req.number} создана (черновик). Не забудьте подать её.")
+    for w in warnings:
+        flash(request, w, "error")
     return RedirectResponse(f"/requests/{req.id}", status_code=303)
+
+
+def _require_editable_draft(db: Session, request: Request, request_id: int, user: User):
+    """Общая проверка для редактирования: заявка существует, в статусе Черновик,
+    и текущий пользователь — её автор. Возвращает (req, error_redirect_or_None)."""
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return None, RedirectResponse("/requests")
+    if req.created_by_id != user.id or req.status != RequestStatus.DRAFT:
+        flash(request, "Редактировать можно только собственный черновик.", "error")
+        return None, RedirectResponse(f"/requests/{request_id}", status_code=303)
+    return req, None
+
+
+@app.get("/requests/{request_id}/edit")
+def edit_request_form(request: Request, request_id: int, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req, err = _require_editable_draft(db, request, request_id, user)
+    if err:
+        return err
+    return render(request, "request_new.html", db, editing=True, req=req, **_reference_data(db))
+
+
+@app.post("/requests/{request_id}/edit")
+async def edit_request_submit(
+    request: Request,
+    request_id: int,
+    db: Session = Depends(get_db),
+    title: str = Form(...),
+    division_id: int = Form(...),
+    expected_date: str = Form(""),
+    description: str = Form(""),
+    purpose: str = Form(""),
+    payment_purpose: str = Form(""),
+    amount: str = Form(""),
+    currency_id: str = Form(""),
+    recipient_name: str = Form(""),
+    recipient_country: str = Form(""),
+    recipient_address: str = Form(""),
+    recipient_bank: str = Form(""),
+    account_number_iban: str = Form(""),
+    swift_bic: str = Form(""),
+    additional_payment_info: str = Form(""),
+    payment_method: str = Form("bank"),
+    agent_id: str = Form(""),
+    buyer_company_id: str = Form(""),
+    purchase_payment_method: str = Form("bank"),
+    markup_notes: str = Form(""),
+    delivery_date: str = Form(""),
+    question_description: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
+):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req, err = _require_editable_draft(db, request, request_id, user)
+    if err:
+        return err
+
+    req.title = title
+    req.division_id = division_id
+    req.expected_date = date.fromisoformat(expected_date) if expected_date else None
+    req.description = description or None
+
+    if req.type == RequestType.PAYMENT:
+        pd = req.payment_details
+        currency = db.get(Currency, int(currency_id))
+        rate, is_stale = get_rate_for_today(db, currency)
+        amount_dec = amount or "0"
+        pd.purpose = purpose
+        pd.payment_purpose = payment_purpose
+        pd.amount = amount_dec
+        pd.currency_id = currency.id
+        pd.recipient_name = recipient_name
+        pd.recipient_country = recipient_country
+        pd.recipient_address = recipient_address
+        pd.recipient_bank = recipient_bank
+        pd.account_number_iban = account_number_iban
+        pd.swift_bic = swift_bic
+        pd.additional_payment_info = additional_payment_info or None
+        pd.payment_method = PaymentMethod(payment_method)
+        pd.agent_id = int(agent_id) if agent_id else None
+        pd.rate_at_request = rate
+        pd.amount_rub_at_request = (float(amount_dec) * float(rate)) if rate else None
+        if rate is None:
+            flash(request, "Курс ЦБ не подтверждён — кэш пуст и cbr.ru недоступен.", "error")
+    elif req.type == RequestType.PURCHASE:
+        pd = req.purchase_details
+        pd.buyer_company_id = int(buyer_company_id)
+        pd.payment_method = PaymentMethod(purchase_payment_method)
+        pd.markup_notes = markup_notes or None
+        pd.delivery_date = date.fromisoformat(delivery_date) if delivery_date else None
+    elif req.type == RequestType.CONSULTATION:
+        req.consultation_details.question_description = question_description
+
+    existing_docs = db.query(RequestDocument).filter(RequestDocument.request_id == req.id).all()
+    existing_count = len(existing_docs)
+    existing_total_size = sum(d.file_size_bytes for d in existing_docs)
+    warnings = await _save_generic_attachments(
+        db, req.id, files, user.id, existing_count=existing_count, existing_total_size=existing_total_size
+    )
+
+    db.commit()
+    flash(request, "Черновик обновлён.")
+    for w in warnings:
+        flash(request, w, "error")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+@app.post("/requests/{request_id}/attachments/{doc_id}/delete")
+def delete_attachment(request: Request, request_id: int, doc_id: int, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req, err = _require_editable_draft(db, request, request_id, user)
+    if err:
+        return err
+    doc = db.get(RequestDocument, doc_id)
+    if doc and doc.request_id == request_id and doc.document_type_code is None:
+        os.remove(doc.storage_path) if os.path.exists(doc.storage_path) else None
+        db.delete(doc)
+        db.commit()
+        flash(request, "Файл удалён.")
+    return RedirectResponse(f"/requests/{request_id}/edit", status_code=303)
 
 
 # --- Request detail & actions ---
@@ -238,10 +426,12 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
         RequestStatus.DOCUMENT_CHECK,
     )
+    attachments = [d for d in req.documents if d.document_type_code is None]
 
     return dict(
         req=req,
         can_submit=is_creator and req.status == RequestStatus.DRAFT,
+        can_edit=is_creator and req.status == RequestStatus.DRAFT,
         can_assign=acting_ruk and req.status == RequestStatus.NEW,
         can_acknowledge_rejection=is_creator and req.status == RequestStatus.REJECTED,
         rejection_reason=rejection_reason,
@@ -251,7 +441,11 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         can_confirm_execution=is_creator and req.status == RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
         can_confirm_documents=is_executor and req.status == RequestStatus.DOCUMENT_CHECK,
         can_upload_document=can_upload_document,
-        executors=db.query(User).filter(User.role == UserRole.ISPOLNITEL).all(),
+        attachments=attachments,
+        executors=db.query(User)
+        .filter(User.role.in_([UserRole.ISPOLNITEL, UserRole.RUKOVODITEL]))
+        .order_by(User.role, User.full_name)
+        .all(),
         missing_documents=missing_required_documents(db, req) if can_upload_document else [],
         doc_type_options=available_document_types(db, req) if can_upload_document else [],
     )

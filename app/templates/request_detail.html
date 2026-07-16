@@ -56,6 +56,7 @@
     <h3>Действия</h3>
 
     {% if can_submit %}
+    <a class="btn secondary" href="/requests/{{ req.id }}/edit">Редактировать черновик</a>
     <form method="post" action="/requests/{{ req.id }}/submit" style="display:inline">
         <button type="submit">Подать заявку</button>
     </form>
@@ -124,6 +125,17 @@
     {% endif %}
 </div>
 
+{% if attachments %}
+<div class="card">
+    <h3>Приложенные файлы</h3>
+    <ul>
+        {% for doc in attachments %}
+        <li>{{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
 {% if can_upload_document %}
 <div class="card">
     <h3>Документы</h3>
@@ -133,7 +145,7 @@
     </p>
     {% endif %}
     <ul>
-        {% for doc in req.documents %}
+        {% for doc in req.documents if doc.document_type_code is not none %}
         <li>{{ doc.document_type_code }} — {{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})</li>
         {% else %}
         <li>Документов пока нет.</li>

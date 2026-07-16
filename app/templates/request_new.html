@@ -1,56 +1,60 @@
 {% extends "base.html" %}
-{% block title %}Новая заявка — PayTracker{% endblock %}
+{% block title %}{{ "Редактирование заявки" if editing else "Новая заявка" }} — PayTracker{% endblock %}
 {% block content %}
-<h2>Новая заявка</h2>
+<h2>{{ ("Редактирование заявки " ~ req.number) if editing else "Новая заявка" }}</h2>
 
+{% if not editing %}
 <div class="type-tabs">
     <button type="button" class="active" onclick="showType('payment')">Платёж</button>
     <button type="button" onclick="showType('purchase')">Закупка</button>
     <button type="button" onclick="showType('consultation')">Консультация</button>
 </div>
+{% endif %}
 
-<form class="card" method="post" action="/requests/new" enctype="application/x-www-form-urlencoded">
-    <input type="hidden" name="type" id="type-field" value="payment">
+<form class="card" method="post"
+      action="{{ ('/requests/' ~ req.id ~ '/edit') if editing else '/requests/new' }}"
+      enctype="multipart/form-data">
+    {% if not editing %}<input type="hidden" name="type" id="type-field" value="payment">{% endif %}
 
     <label>Название заявки</label>
-    <input type="text" name="title" required>
+    <input type="text" name="title" required value="{{ req.title if editing else '' }}">
 
     <div class="two-col">
         <div>
             <label>Подразделение (юрлицо)</label>
             <select name="division_id" required>
                 {% for d in divisions %}
-                <option value="{{ d.id }}">{{ d.name }}</option>
+                <option value="{{ d.id }}" {{ "selected" if editing and req.division_id == d.id else "" }}>{{ d.name }}</option>
                 {% endfor %}
             </select>
         </div>
         <div>
             <label>Ожидаемый срок исполнения</label>
-            <input type="date" name="expected_date">
+            <input type="date" name="expected_date" value="{{ req.expected_date if editing and req.expected_date else '' }}">
         </div>
     </div>
 
     <label>Описание</label>
-    <textarea name="description" rows="2"></textarea>
+    <textarea name="description" rows="2">{{ req.description if editing and req.description else '' }}</textarea>
 
     <!-- ПЛАТЁЖ -->
-    <div class="type-section active" id="section-payment">
+    <div class="type-section {{ 'active' if not editing or req.type.value == 'payment' else '' }}" id="section-payment">
         <h3>Платёж</h3>
         <label>Описание / цель платежа</label>
-        <textarea name="purpose" rows="2"></textarea>
+        <textarea name="purpose" rows="2">{{ req.payment_details.purpose if editing and req.payment_details else '' }}</textarea>
         <label>Назначение платежа</label>
-        <input type="text" name="payment_purpose">
+        <input type="text" name="payment_purpose" value="{{ req.payment_details.payment_purpose if editing and req.payment_details else '' }}">
 
         <div class="two-col">
             <div>
                 <label>Сумма</label>
-                <input type="number" step="0.01" name="amount">
+                <input type="number" step="0.01" name="amount" value="{{ req.payment_details.amount if editing and req.payment_details else '' }}">
             </div>
             <div>
                 <label>Валюта</label>
                 <select name="currency_id">
                     {% for c in currencies %}
-                    <option value="{{ c.id }}">{{ c.code }}</option>
+                    <option value="{{ c.id }}" {{ "selected" if editing and req.payment_details and req.payment_details.currency_id == c.id else "" }}>{{ c.code }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -58,64 +62,84 @@
 
         <h4>Реквизиты получателя</h4>
         <label>Получатель</label>
-        <input type="text" name="recipient_name">
+        <input type="text" name="recipient_name" value="{{ req.payment_details.recipient_name if editing and req.payment_details else '' }}">
         <div class="two-col">
-            <div><label>Страна получателя</label><input type="text" name="recipient_country"></div>
-            <div><label>Адрес получателя (латиницей)</label><input type="text" name="recipient_address"></div>
+            <div><label>Страна получателя</label><input type="text" name="recipient_country" value="{{ req.payment_details.recipient_country if editing and req.payment_details else '' }}"></div>
+            <div><label>Адрес получателя (латиницей)</label><input type="text" name="recipient_address" value="{{ req.payment_details.recipient_address if editing and req.payment_details else '' }}"></div>
         </div>
         <label>Банк получателя</label>
-        <input type="text" name="recipient_bank">
+        <input type="text" name="recipient_bank" value="{{ req.payment_details.recipient_bank if editing and req.payment_details else '' }}">
         <div class="two-col">
-            <div><label>Номер счёта / IBAN</label><input type="text" name="account_number_iban"></div>
-            <div><label>SWIFT / BIC</label><input type="text" name="swift_bic"></div>
+            <div><label>Номер счёта / IBAN</label><input type="text" name="account_number_iban" value="{{ req.payment_details.account_number_iban if editing and req.payment_details else '' }}"></div>
+            <div><label>SWIFT / BIC</label><input type="text" name="swift_bic" value="{{ req.payment_details.swift_bic if editing and req.payment_details else '' }}"></div>
         </div>
         <label>Дополнительная платёжная информация</label>
-        <textarea name="additional_payment_info" rows="2"></textarea>
+        <textarea name="additional_payment_info" rows="2">{{ req.payment_details.additional_payment_info if editing and req.payment_details and req.payment_details.additional_payment_info else '' }}</textarea>
 
         <label>Способ оплаты</label>
         <select name="payment_method" onchange="toggleAgent(this.value)">
-            <option value="bank">Прямой платёж через банк</option>
-            <option value="agent">Через платёжного агента</option>
+            <option value="bank" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method.value == 'bank' else "" }}>Прямой платёж через банк</option>
+            <option value="agent" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method.value == 'agent' else "" }}>Через платёжного агента</option>
         </select>
         <div id="agent-field">
             <label>Агент</label>
             <select name="agent_id">
                 <option value="">—</option>
                 {% for a in agents %}
-                <option value="{{ a.id }}">{{ a.code }}</option>
+                <option value="{{ a.id }}" {{ "selected" if editing and req.payment_details and req.payment_details.agent_id == a.id else "" }}>{{ a.code }}</option>
                 {% endfor %}
             </select>
         </div>
     </div>
 
     <!-- ЗАКУПКА -->
-    <div class="type-section" id="section-purchase">
+    <div class="type-section {{ 'active' if editing and req.type.value == 'purchase' else '' }}" id="section-purchase">
         <h3>Закупка</h3>
         <label>Компания-покупатель</label>
         <select name="buyer_company_id">
             {% for bc in buyer_companies %}
-            <option value="{{ bc.id }}">{{ bc.name }}</option>
+            <option value="{{ bc.id }}" {{ "selected" if editing and req.purchase_details and req.purchase_details.buyer_company_id == bc.id else "" }}>{{ bc.name }}</option>
             {% endfor %}
         </select>
         <label>Способ оплаты</label>
         <select name="purchase_payment_method">
-            <option value="bank">Прямой платёж от компании-покупателя</option>
-            <option value="agent">Через платёжного агента</option>
+            <option value="bank" {{ "selected" if editing and req.purchase_details and req.purchase_details.payment_method.value == 'bank' else "" }}>Прямой платёж от компании-покупателя</option>
+            <option value="agent" {{ "selected" if editing and req.purchase_details and req.purchase_details.payment_method.value == 'agent' else "" }}>Через платёжного агента</option>
         </select>
         <label>Расчёт наценки / комментарий</label>
-        <textarea name="markup_notes" rows="2"></textarea>
+        <textarea name="markup_notes" rows="2">{{ req.purchase_details.markup_notes if editing and req.purchase_details and req.purchase_details.markup_notes else '' }}</textarea>
         <label>Дата поставки (если известна)</label>
-        <input type="date" name="delivery_date">
+        <input type="date" name="delivery_date" value="{{ req.purchase_details.delivery_date if editing and req.purchase_details and req.purchase_details.delivery_date else '' }}">
     </div>
 
     <!-- КОНСУЛЬТАЦИЯ -->
-    <div class="type-section" id="section-consultation">
+    <div class="type-section {{ 'active' if editing and req.type.value == 'consultation' else '' }}" id="section-consultation">
         <h3>Консультация</h3>
         <label>Описание задачи / вопрос</label>
-        <textarea name="question_description" rows="3"></textarea>
+        <textarea name="question_description" rows="3">{{ req.consultation_details.question_description if editing and req.consultation_details else '' }}</textarea>
     </div>
 
-    <button type="submit">Создать заявку (черновик)</button>
+    <h3>Файлы</h3>
+    <p><i>Можно приложить несколько файлов. Лимит на 1 файл — 50 Мб, на все файлы — 500 Мб, максимум 50 файлов.</i></p>
+
+    {% if editing and req.documents %}
+    <ul>
+        {% for doc in req.documents %}
+        {% if doc.document_type_code is none %}
+        <li>
+            {{ doc.file_name }}
+            <form method="post" action="/requests/{{ req.id }}/attachments/{{ doc.id }}/delete" style="display:inline">
+                <button type="submit" class="danger" style="padding:2px 8px;font-size:12px;margin:0">удалить</button>
+            </form>
+        </li>
+        {% endif %}
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+    <input type="file" name="files" multiple>
+
+    <button type="submit">{{ "Сохранить черновик" if editing else "Создать заявку (черновик)" }}</button>
 </form>
 
 <script>
@@ -129,6 +153,6 @@ function showType(type) {
 function toggleAgent(method) {
     document.getElementById('agent-field').style.display = method === 'agent' ? 'block' : 'none';
 }
-toggleAgent('bank');
+toggleAgent(document.querySelector('select[name=payment_method]').value);
 </script>
 {% endblock %}

@@ -11,13 +11,18 @@ from app.db.base_class import Base
 class RequestDocument(Base):
     """Загруженный файл. Документы загружаются один раз, по ходу исполнения заявки
     (см. Исполнитель исполняет заявку.md) — переиспользуются на этапе проверки
-    комплектности, а не загружаются заново."""
+    комплектности, а не загружаются заново.
+
+    document_type_code может быть NULL — это означает, что файл приложен Заказчиком
+    как вспомогательный (при создании/редактировании заявки, см. заявки на платежи.md
+    "Форма для загрузки файлов"), а не является формальным закрывающим документом
+    из справочник типов документов.md."""
 
     __tablename__ = "request_documents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("requests.id", ondelete="CASCADE"), nullable=False)
-    document_type_code: Mapped[str] = mapped_column(ForeignKey("document_types.code"), nullable=False)
+    document_type_code: Mapped[str | None] = mapped_column(ForeignKey("document_types.code"), nullable=True)
 
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -27,7 +32,7 @@ class RequestDocument(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     request: Mapped["Request"] = relationship(back_populates="documents")
-    document_type: Mapped["DocumentType"] = relationship()
+    document_type: Mapped["DocumentType | None"] = relationship()
     uploaded_by: Mapped["User"] = relationship()
 
 
