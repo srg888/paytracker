@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Новая заявка — PayTracker{% endblock %}
+{% block content %}
+
+<h2>Создание заявки</h2>
+<p style="color:#666;margin-bottom:16px">Выберите тип заявки:</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+    <a href="/requests/new/payment" class="card" style="display:block;text-align:center;padding:32px 16px;text-decoration:none;color:inherit;cursor:pointer;border:2px solid #ddd;border-radius:8px;transition:border-color 0.2s">
+        <div style="font-size:48px;margin-bottom:12px">💰</div>
+        <div style="font-size:18px;font-weight:600">Платёж</div>
+        <div style="font-size:13px;color:#888;margin-top:8px">Платёж через банк или агента</div>
+    </a>
+    <a href="/requests/new/purchase" class="card" style="display:block;text-align:center;padding:32px 16px;text-decoration:none;color:inherit;cursor:pointer;border:2px solid #ddd;border-radius:8px;transition:border-color 0.2s">
+        <div style="font-size:48px;margin-bottom:12px">📦</div>
+        <div style="font-size:18px;font-weight:600">Закупка</div>
+        <div style="font-size:13px;color:#888;margin-top:8px">Закупка через компанию-покупателя</div>
+    </a>
+    <a href="/requests/new/consultation" class="card" style="display:block;text-align:center;padding:32px 16px;text-decoration:none;color:inherit;cursor:pointer;border:2px solid #ddd;border-radius:8px;transition:border-color 0.2s">
+        <div style="font-size:48px;margin-bottom:12px">💬</div>
+        <div style="font-size:18px;font-weight:600">Консультация</div>
+        <div style="font-size:13px;color:#888;margin-top:8px">Запрос консультации/экспертизы</div>
+    </a>
+</div>
+
+{% endblock %}

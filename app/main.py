@@ -298,15 +298,31 @@ def _reference_data(db: Session) -> dict:
     )
 
 
+_VALID_REQUEST_TYPES = {"payment", "purchase", "consultation"}
+
+
 @app.get("/requests/new")
-def new_request_form(request: Request, db: Session = Depends(get_db)):
+def new_request_type_select(request: Request, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
     if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
         flash(request, "Исполнитель не может создавать заявки.", "error")
         return RedirectResponse("/requests")
-    return render(request, "request_new.html", db, editing=False, req=None, **_reference_data(db))
+    return render(request, "request_type_select.html", db)
+
+
+@app.get("/requests/new/{req_type}")
+def new_request_form(request: Request, req_type: str, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
+        flash(request, "Исполнитель не может создавать заявки.", "error")
+        return RedirectResponse("/requests")
+    if req_type not in _VALID_REQUEST_TYPES:
+        return RedirectResponse("/requests/new")
+    return render(request, "request_new.html", db, editing=False, req=None, req_type=req_type, **_reference_data(db))
 
 
 def _next_request_number(req_id: int) -> str:
@@ -315,11 +331,11 @@ def _next_request_number(req_id: int) -> str:
     return f"REQ-{req_id:06d}"
 
 
-@app.post("/requests/new")
+@app.post("/requests/new/{req_type}")
 async def create_request(
     request: Request,
+    req_type: str,
     db: Session = Depends(get_db),
-    type: str = Form(...),
     title: str = Form(...),
     division_id: int = Form(...),
     expected_date: str = Form(""),
@@ -353,12 +369,14 @@ async def create_request(
     if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
         flash(request, "Исполнитель не может создавать заявки.", "error")
         return RedirectResponse("/requests")
+    if req_type not in _VALID_REQUEST_TYPES:
+        return RedirectResponse("/requests/new")
 
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
     req = RequestModel(
         number="",  # выставим после flush, когда узнаем id
-        type=RequestType(type),
+        type=RequestType(req_type),
         status=RequestStatus.DRAFT,
         title=title,
         description=description or None,
@@ -370,7 +388,7 @@ async def create_request(
     db.flush()
     req.number = _next_request_number(req.id)
 
-    if type == RequestType.PAYMENT.value:
+    if req_type == RequestType.PAYMENT.value:
         currency = db.get(Currency, int(currency_id))
         rate, is_stale = get_rate_for_today(db, currency)
         amount_dec = amount or "0"
@@ -397,14 +415,14 @@ async def create_request(
             flash(request, "Курс ЦБ на сегодня недоступен, использован последний известный курс (устаревший).", "error")
         elif rate is None:
             flash(request, "Курс ЦБ не подтверждён — кэш пуст и cbr.ru недоступен.", "error")
-    elif type == RequestType.PURCHASE.value:
+    elif req_type == RequestType.PURCHASE.value:
         req.purchase_details = PurchaseRequest(
             buyer_company_id=int(buyer_company_id),
             payment_method=PaymentMethod(purchase_payment_method),
             markup_notes=markup_notes or None,
             delivery_date=date.fromisoformat(delivery_date) if delivery_date else None,
         )
-    elif type == RequestType.CONSULTATION.value:
+    elif req_type == RequestType.CONSULTATION.value:
         req.consultation_details = ConsultationRequest(question_description=question_description)
 
     db.flush()  # нужен req.id для сохранения вложений
