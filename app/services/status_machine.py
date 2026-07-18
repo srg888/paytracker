@@ -66,11 +66,14 @@ def submit(db: Session, req: Request, user: User) -> None:
 
 
 def assign_executor(db: Session, req: Request, user: User, executor_id: int) -> None:
-    """Новая заявка -> В работе. Руководитель или его временный заместитель."""
+    """Назначение или переназначение исполнителя.
+    Новая заявка -> В работе (первичное назначение).
+    В работе -> В работе (переназначение).
+    Только Руководитель или его временный заместитель."""
     if not is_acting_rukovoditel(db, user):
         raise TransitionError("Назначать исполнителя может только Руководитель.")
-    if req.status != RequestStatus.NEW:
-        raise TransitionError("Заявка не в статусе 'Новая заявка'.")
+    if req.status not in (RequestStatus.NEW, RequestStatus.IN_PROGRESS):
+        raise TransitionError("Заявка должна быть в статусе 'Новая заявка' или 'В работе'.")
     executor = db.get(User, executor_id)
     if not executor:
         raise TransitionError("Исполнитель не найден.")
@@ -78,10 +81,17 @@ def assign_executor(db: Session, req: Request, user: User, executor_id: int) -> 
         raise TransitionError("Назначить можно только Исполнителя или Руководителя.")
     if not executor.is_active:
         raise TransitionError("Нельзя назначить неактивного пользователя.")
+    is_reassign = req.status == RequestStatus.IN_PROGRESS
     req.executor_id = executor_id
-    _record(
-        db, req, RequestStatus.NEW, RequestStatus.IN_PROGRESS, user, None, AuditActionType.EXECUTOR_ASSIGNED
-    )
+    if is_reassign:
+        _record(
+            db, req, RequestStatus.IN_PROGRESS, RequestStatus.IN_PROGRESS, user, f"Переназначен на {executor.full_name}",
+            AuditActionType.EXECUTOR_ASSIGNED,
+        )
+    else:
+        _record(
+            db, req, RequestStatus.NEW, RequestStatus.IN_PROGRESS, user, None, AuditActionType.EXECUTOR_ASSIGNED
+        )
 
 
 def reject(db: Session, req: Request, user: User, reason: str) -> None:
@@ -145,9 +155,11 @@ def mark_execution_done(db: Session, req: Request, user: User) -> None:
 
 def confirm_execution(db: Session, req: Request, user: User) -> None:
     """Ожидает подтверждения Заказчика -> Проверка комплектности документов.
-    Неотменяемое действие, только автор заявки."""
-    if req.created_by_id != user.id:
-        raise TransitionError("Подтвердить исполнение может только автор заявки.")
+    Неотменяемое действие. Автор заявки, Руководитель или его заместитель."""
+    is_author = req.created_by_id == user.id
+    acting_ruk = is_acting_rukovoditel(db, user)
+    if not is_author and not acting_ruk:
+        raise TransitionError("Подтвердить исполнение может автор заявки или Руководитель.")
     if req.status != RequestStatus.AWAITING_CUSTOMER_CONFIRMATION:
         raise TransitionError("Заявка не в статусе 'Ожидает подтверждения Заказчика'.")
     _record(

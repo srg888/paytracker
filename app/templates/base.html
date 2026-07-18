@@ -10,6 +10,7 @@
         <a href="/requests" class="brand">PayTracker</a>
         {% if current_user %}
         <span class="user-info">{{ current_user.full_name }} <span class="badge">{{ current_user.role.value }}</span></span>
+        {% if current_user.role.value == "rukovoditel" %}<a href="/delegations" class="nav-link">Делегирование</a><a href="/audit" class="nav-link">Аудит</a>{% endif %}
         <a href="/logout" class="logout">Выйти</a>
         {% endif %}
     </header>

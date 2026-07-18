@@ -100,6 +100,16 @@
     </form>
     {% endif %}
 
+    {% if can_reassign %}
+    <form method="post" action="/requests/{{ req.id }}/assign">
+        <label>Переназначить исполнителя</label>
+        <select name="executor_id">
+            {% for e in executors %}<option value="{{ e.id }}"{% if req.executor_id == e.id %} selected{% endif %}>{{ e.full_name }}</option>{% endfor %}
+        </select>
+        <button type="submit">Переназначить</button>
+    </form>
+    {% endif %}
+
     {% if can_mark_done %}
     <form method="post" action="/requests/{{ req.id }}/mark_done" style="display:inline">
         <button type="submit">Исполнение завершено</button>
@@ -119,7 +129,7 @@
     </form>
     {% endif %}
 
-    {% if not can_submit and not can_assign and not can_acknowledge_rejection and not can_request_clarification
+    {% if not can_submit and not can_assign and not can_reassign and not can_acknowledge_rejection and not can_request_clarification
         and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_confirm_documents %}
     <p><i>Доступных действий нет.</i></p>
     {% endif %}
@@ -136,7 +146,7 @@
 </div>
 {% endif %}
 
-{% if can_upload_document %}
+{% if can_upload_document or can_override_requirements %}
 <div class="card">
     <h3>Документы</h3>
     {% if missing_documents %}
@@ -146,11 +156,20 @@
     {% endif %}
     <ul>
         {% for doc in req.documents if doc.document_type_code is not none %}
-        <li>{{ doc.document_type_code }} — {{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})</li>
+        <li>
+            {{ doc.document_type_code }} — {{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})
+            {% set can_del = doc.uploaded_by_id == current_user.id and (req.executor_id == current_user.id or acting_ruk) %}
+            {% if can_del %}
+            <form method="post" action="/requests/{{ req.id }}/documents/{{ doc.id }}/delete" style="display:inline">
+                <button type="submit" class="danger" style="padding:2px 8px;font-size:12px;margin:0">удалить</button>
+            </form>
+            {% endif %}
+        </li>
         {% else %}
         <li>Документов пока нет.</li>
         {% endfor %}
     </ul>
+    {% if can_upload_document %}
     <form method="post" action="/requests/{{ req.id }}/documents" enctype="multipart/form-data">
         <label>Тип документа</label>
         <select name="document_type_code">
@@ -160,6 +179,36 @@
         <input type="file" name="file" required>
         <button type="submit">Загрузить</button>
     </form>
+    {% endif %}
+    {% if can_override_requirements %}
+    <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-weight:600;font-size:13px">Требования к документам (изменить)</summary>
+        <table style="margin-top:8px">
+            <thead><tr><th>Код</th><th>Название</th><th>Обязательность</th><th></th></tr></thead>
+            <tbody>
+                {% for dt in doc_type_options %}
+                <tr>
+                    <td>{{ dt.code }}</td>
+                    <td>{{ dt.name }}</td>
+                    <td>
+                        {% set overridden = doc_type_overrides.get(dt.code) %}
+                        {% if overridden is not none %}
+                            {{ "Да" if overridden else "Нет" }}
+                        {% else %}
+                            {{ "Да" if dt.is_required_default else "Нет" }} <i>(по умолч.)</i>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="/requests/{{ req.id }}/document_requirements/{{ dt.code }}/toggle" style="display:inline">
+                            <button type="submit" class="secondary" style="font-size:12px;padding:4px 10px;margin:0">Переключить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </details>
+    {% endif %}
 </div>
 {% endif %}
 

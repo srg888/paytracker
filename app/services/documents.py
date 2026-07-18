@@ -19,7 +19,7 @@ def document_category_for_request(req: Request) -> DocumentCategory | None:
 def missing_required_documents(db: Session, req: Request) -> list[DocumentType]:
     """Возвращает список ОТСУТСТВУЮЩИХ обязательных типов документов,
     с учётом переопределений в request_document_requirements (см.
-    Исполнитель готовит закрывающие документы.md)."""
+    Проверка комплектности и закрытие заявки.md)."""
     category = document_category_for_request(req)
     if category is None:
         return []

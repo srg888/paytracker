@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Аудит — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests">&larr; К списку заявок</a>
+<h2>Журнал аудита</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Дата</th>
+            <th>Пользователь</th>
+            <th>Действие</th>
+            <th>Объект</th>
+            <th>Поле</th>
+            <th>Было</th>
+            <th>Стало</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in entries %}
+        <tr>
+            <td>{{ e.id }}</td>
+            <td>{{ e.created_at.strftime("%d.%m.%Y %H:%M") }}</td>
+            <td>{{ e.user.full_name }}</td>
+            <td>{{ e.action_type.value }}</td>
+            <td>{{ e.entity_type }} #{{ e.entity_id }}</td>
+            <td>{{ e.field_name or "—" }}</td>
+            <td>{{ e.old_value or "—" }}</td>
+            <td>{{ e.new_value or "—" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">Записей аудита пока нет.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}

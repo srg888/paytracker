@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Делегирование — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests">&larr; К списку заявок</a>
+<h2>Делегирование полномочий Руководителя</h2>
+
+<h3>Новое делегирование</h3>
+<form method="post" action="/delegations/new">
+    <label>Исполнитель</label>
+    <select name="delegate_id" required>
+        {% for e in executors %}<option value="{{ e.id }}">{{ e.full_name }}</option>{% endfor %}
+    </select>
+    <label>Дата начала</label>
+    <input type="date" name="start_date" value="{{ current_date }}" required>
+    <label>Дата окончания</label>
+    <input type="date" name="end_date" required>
+    <button type="submit">Создать делегирование</button>
+</form>
+
+<h3>История делегирований</h3>
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Делегат</th>
+            <th>Начало</th>
+            <th>Окончание</th>
+            <th>Статус</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for d in delegations %}
+        <tr>
+            <td>{{ d.id }}</td>
+            <td>{{ d.delegate.full_name }}</td>
+            <td>{{ d.start_date }}</td>
+            <td>{{ d.end_date }}</td>
+            <td>
+                {% if d.revoked_at %}
+                    <span class="status-pill status-archived">Отозвано</span>
+                {% elif d.start_date <= current_date and d.end_date >= current_date %}
+                    <span class="status-pill status-in_progress">Активно</span>
+                {% elif d.start_date > current_date %}
+                    <span class="status-pill status-new">Ожидает</span>
+                {% else %}
+                    <span class="status-pill status-archived">Истекло</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if not d.revoked_at and d.start_date <= current_date and d.end_date >= current_date %}
+                <form method="post" action="/delegations/{{ d.id }}/revoke" style="display:inline">
+                    <button type="submit" class="danger">Отозвать</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">Делегирований пока нет.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}

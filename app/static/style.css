@@ -16,6 +16,7 @@ body {
 .topbar .brand { color: #fff; font-weight: 600; text-decoration: none; font-size: 18px; }
 .topbar .user-info { margin-left: auto; font-size: 14px; }
 .topbar .logout { color: #cfcfc7; text-decoration: none; font-size: 14px; }
+.topbar .nav-link { color: #cfcfc7; text-decoration: none; font-size: 14px; margin-left: auto; }
 .badge {
     background: #4a4a45;
     padding: 2px 8px;

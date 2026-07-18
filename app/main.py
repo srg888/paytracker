@@ -13,14 +13,16 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.db.session import get_db
 from app.models.agent import Agent
+from app.models.audit_log import AuditLog
 from app.models.buyer_company import BuyerCompany
 from app.models.currency import Currency
 from app.models.division import Division
-from app.models.document import RequestDocument
+from app.models.document import RequestDocument, RequestDocumentRequirement
 from app.models.document_type import DocumentType
-from app.models.enums import PaymentMethod, RequestStatus, RequestType, UserRole
+from app.models.enums import AuditActionType, PaymentMethod, RequestStatus, RequestType, UserRole
 from app.models.request import ConsultationRequest, PaymentRequest, PurchaseRequest, Request as RequestModel
 from app.models.comment import RequestComment
+from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
 from app.services import status_machine
@@ -301,6 +303,9 @@ def new_request_form(request: Request, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
+    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
+        flash(request, "Исполнитель не может создавать заявки.", "error")
+        return RedirectResponse("/requests")
     return render(request, "request_new.html", db, editing=False, req=None, **_reference_data(db))
 
 
@@ -345,6 +350,9 @@ async def create_request(
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
+    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
+        flash(request, "Исполнитель не может создавать заявки.", "error")
+        return RedirectResponse("/requests")
 
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
@@ -518,21 +526,43 @@ async def edit_request_submit(
     return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
 
-@app.post("/requests/{request_id}/attachments/{doc_id}/delete")
-def delete_attachment(request: Request, request_id: int, doc_id: int, db: Session = Depends(get_db)):
+@app.post("/requests/{request_id}/documents/{doc_id}/delete")
+def delete_document(request: Request, request_id: int, doc_id: int, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    req, err = _require_editable_draft(db, request, request_id, user)
-    if err:
-        return err
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
     doc = db.get(RequestDocument, doc_id)
-    if doc and doc.request_id == request_id and doc.document_type_code is None:
-        os.remove(doc.storage_path) if os.path.exists(doc.storage_path) else None
-        db.delete(doc)
-        db.commit()
-        flash(request, "Файл удалён.")
-    return RedirectResponse(f"/requests/{request_id}/edit", status_code=303)
+    if not doc or doc.request_id != request_id:
+        flash(request, "Документ не найден.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    via_rukovoditel = is_acting_rukovoditel(db, user)
+    # Кто может удалять:
+    # - автор черновика может удалять вспомогательные файлы (document_type_code=None)
+    # - Исполнитель (или Руководитель) может удалять документы, которые сам загрузил
+    can_delete = False
+    if req.status == RequestStatus.DRAFT and req.created_by_id == user.id and doc.document_type_code is None:
+        can_delete = True
+    elif doc.uploaded_by_id == user.id and doc.document_type_code is not None and (
+        req.executor_id == user.id or via_rukovoditel
+    ):
+        can_delete = True
+
+    if not can_delete:
+        flash(request, "Нет права на удаление этого документа.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    os.remove(doc.storage_path) if os.path.exists(doc.storage_path) else None
+    db.delete(doc)
+    db.commit()
+    flash(request, "Документ удалён.")
+    # Перенаправляем обратно туда, откуда пришли: /edit для черновика, /requests/{id} для остальных
+    if req.status == RequestStatus.DRAFT:
+        return RedirectResponse(f"/requests/{request_id}/edit", status_code=303)
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
 
 # --- Request detail & actions ---
@@ -563,14 +593,16 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         can_submit=is_creator and req.status == RequestStatus.DRAFT,
         can_edit=is_creator and req.status == RequestStatus.DRAFT,
         can_assign=acting_ruk and req.status == RequestStatus.NEW,
+        can_reassign=acting_ruk and req.status == RequestStatus.IN_PROGRESS,
         can_acknowledge_rejection=is_creator and req.status == RequestStatus.REJECTED,
         rejection_reason=rejection_reason,
         can_request_clarification=is_executor and req.status == RequestStatus.IN_PROGRESS,
         can_answer_clarification=is_creator and req.status == RequestStatus.CLARIFICATION,
         can_mark_done=is_executor and req.status == RequestStatus.IN_PROGRESS,
-        can_confirm_execution=is_creator and req.status == RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
+        can_confirm_execution=(is_creator or acting_ruk) and req.status == RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
         can_confirm_documents=is_executor and req.status == RequestStatus.DOCUMENT_CHECK,
         can_upload_document=can_upload_document,
+        acting_ruk=acting_ruk,
         attachments=attachments,
         executors=db.query(User)
         .filter(User.role.in_([UserRole.ISPOLNITEL, UserRole.RUKOVODITEL]))
@@ -578,6 +610,17 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         .all(),
         missing_documents=missing_required_documents(db, req) if can_upload_document else [],
         doc_type_options=available_document_types(db, req) if can_upload_document else [],
+        can_override_requirements=acting_ruk and req.status in (
+            RequestStatus.IN_PROGRESS,
+            RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
+            RequestStatus.DOCUMENT_CHECK,
+        ) and req.type != RequestType.CONSULTATION,
+        doc_type_overrides={
+            o.document_type_code: o.is_required_override
+            for o in db.query(RequestDocumentRequirement).filter(
+                RequestDocumentRequirement.request_id == req.id
+            )
+        },
     )
 
 
@@ -654,12 +697,6 @@ def action_mark_done(request: Request, request_id: int, db: Session = Depends(ge
         return RedirectResponse("/requests")
     try:
         status_machine.mark_execution_done(db, req, user)
-        # фиксируем курс ЦБ на дату фактического исполнения (см. заявки на платежи.md)
-        if req.payment_details:
-            rate, is_stale = get_rate_for_today(db, req.payment_details.currency)
-            if rate is not None:
-                req.payment_details.rate_at_execution = rate
-                req.payment_details.amount_rub_at_execution = _rub_amount(req.payment_details.amount, rate)
         db.commit()
         flash(request, "Исполнение отмечено как завершённое.")
     except status_machine.TransitionError as e:
@@ -670,7 +707,27 @@ def action_mark_done(request: Request, request_id: int, db: Session = Depends(ge
 
 @app.post("/requests/{request_id}/confirm_execution")
 def action_confirm_execution(request: Request, request_id: int, db: Session = Depends(get_db)):
-    return _do_transition(request, db, request_id, status_machine.confirm_execution)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    try:
+        status_machine.confirm_execution(db, req, user)
+        # фиксируем курс ЦБ на дату фактического исполнения (см. заявки на платежи.md,
+        # раздел "Подтверждение исполнения Заказчиком")
+        if req.payment_details:
+            rate, is_stale = get_rate_for_today(db, req.payment_details.currency)
+            if rate is not None:
+                req.payment_details.rate_at_execution = rate
+                req.payment_details.amount_rub_at_execution = _rub_amount(req.payment_details.amount, rate)
+        db.commit()
+        flash(request, "Исполнение подтверждено.")
+    except status_machine.TransitionError as e:
+        db.rollback()
+        flash(request, str(e), "error")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
 
 @app.post("/requests/{request_id}/confirm_documents")
@@ -778,3 +835,158 @@ async def action_upload_document(
     db.commit()
     flash(request, "Документ загружен.")
     return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+# --- Delegation management ---
+
+
+def _require_rukovoditel(request: Request, db: Session) -> User | None:
+    user = require_login(request, db)
+    if not user or user.role != UserRole.RUKOVODITEL:
+        flash(request, "Доступно только Руководителю.", "error")
+        return None
+    return user
+
+
+@app.get("/delegations")
+def delegations_list(request: Request, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    delegations = db.query(Delegation).order_by(Delegation.id.desc()).all()
+    executors = db.query(User).filter(
+        User.role.in_([UserRole.ISPOLNITEL, UserRole.RUKOVODITEL]),
+        User.is_active.is_(True),
+    ).order_by(User.full_name).all()
+    return render(request, "delegations.html", db, delegations=delegations, executors=executors, current_date=date.today())
+
+
+@app.post("/delegations/new")
+def delegation_create(
+    request: Request,
+    delegate_id: int = Form(...),
+    start_date: str = Form(...),
+    end_date: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/delegations")
+
+    # BR-030: одновременно может быть только одно активное делегирование
+    today = date.today()
+    active = (
+        db.query(Delegation)
+        .filter(
+            Delegation.start_date <= today,
+            Delegation.end_date >= today,
+            Delegation.revoked_at.is_(None),
+        )
+        .first()
+    )
+    if active:
+        flash(request, "Уже есть активное делегирование. Отзовите его перед созданием нового.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+
+    delegate = db.get(User, delegate_id)
+    if not delegate or not delegate.is_active:
+        flash(request, "Исполнитель не найден или неактивен.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    if start > end:
+        flash(request, "Дата начала не может быть позже даты окончания.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+
+    delegation = Delegation(delegator_id=user.id, delegate_id=delegate_id, start_date=start, end_date=end)
+    db.add(delegation)
+    db.flush()
+    db.add(AuditLog(entity_type="delegation", entity_id=delegation.id, user_id=user.id, action_type=AuditActionType.DELEGATION_STARTED))
+    db.commit()
+    flash(request, f"Делегирование создано для {delegate.full_name}.")
+    return RedirectResponse("/delegations", status_code=303)
+
+
+@app.post("/delegations/{delegation_id}/revoke")
+def delegation_revoke(request: Request, delegation_id: int, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/delegations")
+
+    delegation = db.get(Delegation, delegation_id)
+    if not delegation:
+        flash(request, "Делегирование не найдено.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+    if delegation.delegator_id != user.id:
+        flash(request, "Отозвать можно только собственное делегирование.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+    if delegation.revoked_at is not None:
+        flash(request, "Делегирование уже отозвано.", "error")
+        return RedirectResponse("/delegations", status_code=303)
+
+    delegation.revoked_at = datetime.now(timezone.utc)
+    db.add(AuditLog(entity_type="delegation", entity_id=delegation.id, user_id=user.id, action_type=AuditActionType.DELEGATION_REVOKED))
+    db.commit()
+    flash(request, "Делегирование отозвано.")
+    return RedirectResponse("/delegations", status_code=303)
+
+
+# --- Document requirement overrides ---
+
+
+@app.post("/requests/{request_id}/document_requirements/{doc_type_code}/toggle")
+def toggle_document_requirement(request: Request, request_id: int, doc_type_code: str, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    req = db.get(RequestModel, request_id)
+    if not req:
+        flash(request, "Заявка не найдена.", "error")
+        return RedirectResponse("/requests", status_code=303)
+    if req.status not in (RequestStatus.IN_PROGRESS, RequestStatus.AWAITING_CUSTOMER_CONFIRMATION, RequestStatus.DOCUMENT_CHECK):
+        flash(request, "Изменять требования можно только для заявки в работе.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    doc_type = db.get(DocumentType, doc_type_code)
+    if not doc_type:
+        flash(request, "Тип документа не найден.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    existing = db.query(RequestDocumentRequirement).filter(
+        RequestDocumentRequirement.request_id == request_id,
+        RequestDocumentRequirement.document_type_code == doc_type_code,
+    ).first()
+
+    if existing:
+        current_required = existing.is_required_override
+        if current_required:
+            db.delete(existing)
+            new_status = "необязателен"
+        else:
+            existing.is_required_override = True
+            new_status = "обязателен"
+    else:
+        db.add(RequestDocumentRequirement(
+            request_id=request_id,
+            document_type_code=doc_type_code,
+            is_required_override=not doc_type.is_required_default,
+        ))
+        new_status = "необязателен" if doc_type.is_required_default else "обязателен"
+
+    db.commit()
+    flash(request, f"Требование для {doc_type_code} изменено: {new_status}.")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+# --- Audit log ---
+
+
+@app.get("/audit")
+def audit_log_view(request: Request, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    entries = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(200).all()
+    return render(request, "audit.html", db, entries=entries)
