@@ -2,6 +2,7 @@ import os
 import uuid
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
@@ -43,6 +44,113 @@ UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_TOTAL_SIZE = 500 * 1024 * 1024
 MAX_FILES = 50
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+ALLOWED_FILE_EXTENSIONS = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".csv",
+    ".jpg",
+    ".jpeg",
+    ".png",
+}
+
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+    "image/jpeg",
+    "image/png",
+}
+
+# Реальная сигнатура файла (через libmagic), сверяемая с заявленным расширением.
+# Клиентский Content-Type ничего не гарантирует — здесь проверяются байты файла.
+# Для .doc/.xls (старые бинарные форматы Office, OLE Compound File) сигнатура
+# определяется как application/x-ole-storage — именно её и требуем, а не
+# application/octet-stream, чтобы проверка не превращалась в пропуск всего подряд.
+_EXTENSION_TO_ACTUAL_MIMES = {
+    ".pdf": {"application/pdf"},
+    ".doc": {"application/x-ole-storage", "application/x-cfb"},
+    ".docx": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/zip",
+    },
+    ".xls": {"application/x-ole-storage", "application/x-cfb"},
+    ".xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+    },
+    ".csv": {"text/csv", "text/plain", "application/csv"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
+    ".png": {"image/png"},
+}
+
+
+def _validate_uploaded_file(file: UploadFile) -> tuple[bool, str | None]:
+    """Проверяет расширение и заявленный (клиентский) MIME-тип файла.
+
+    Это только первый, дешёвый фильтр. Настоящая проверка содержимого —
+    в _is_actual_mime_allowed, которая сверяет реальную сигнатуру файла.
+    """
+    if not file.filename:
+        return False, "Файл не выбран."
+
+    extension = Path(file.filename).suffix.lower()
+    if extension not in ALLOWED_FILE_EXTENSIONS:
+        return False, "Недопустимый тип файла. Разрешены: " + ", ".join(sorted(ALLOWED_FILE_EXTENSIONS))
+
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        return False, "Недопустимый MIME-тип файла."
+
+    return True, None
+
+
+def _stored_filename(original_filename: str) -> str:
+    """Имя файла на диске полностью генерируется сервером — оригинальное
+    имя пользователя туда никогда не попадает (защита от спецсимволов и
+    path traversal). Оригинальное имя сохраняется отдельно, в БД."""
+    extension = Path(original_filename).suffix.lower()
+    return f"{uuid.uuid4().hex}{extension}"
+
+
+def _is_actual_mime_allowed(file_path: str, extension: str) -> bool:
+    """Сверяет реальную сигнатуру файла (libmagic) с заявленным расширением."""
+    import magic
+
+    actual_mime = magic.from_file(file_path, mime=True)
+    return actual_mime in _EXTENSION_TO_ACTUAL_MIMES.get(extension, set())
+
+
+async def _save_upload_with_limit(file: UploadFile, dest_path: str, max_size: int) -> int:
+    """Стримит файл на диск чанками, не читая его целиком в память.
+    Если размер превышает max_size — обрывает запись и удаляет частичный файл.
+    Возвращает фактический сохранённый размер."""
+    total_size = 0
+    try:
+        with open(dest_path, "wb") as output:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > max_size:
+                    raise ValueError("FILE_TOO_LARGE")
+                output.write(chunk)
+    except Exception:
+        try:
+            os.remove(dest_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return total_size
+
 
 def _get_session_secret() -> str:
     secret = os.getenv("SESSION_SECRET")
@@ -592,7 +700,10 @@ async def action_upload_document(
     if not user:
         return RedirectResponse("/login")
 
-    req = db.get(RequestModel, request_id)
+    # Блокируем строку заявки на время проверки лимитов и создания документа —
+    # без этого два параллельных upload могут оба пройти проверку общего лимита
+    # до того, как любой из них закоммитится, и вместе превысить 500 Мб.
+    req = db.query(RequestModel).filter(RequestModel.id == request_id).with_for_update().first()
     if not req:
         return RedirectResponse("/requests")
     if req.executor_id != user.id:
@@ -610,35 +721,57 @@ async def action_upload_document(
         flash(request, "Этот тип документа не относится к данной заявке.", "error")
         return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
-    if not file or not file.filename:
-        flash(request, "Файл не выбран.", "error")
+    is_valid, validation_error = _validate_uploaded_file(file)
+    if not is_valid:
+        flash(request, validation_error or "Недопустимый файл.", "error")
         return RedirectResponse(f"/requests/{request_id}", status_code=303)
-    content = await file.read()
-    if len(content) > MAX_FILE_SIZE:
-        flash(request, f"{file.filename}: превышен лимит 50 Мб на файл, не загружен.", "error")
-        return RedirectResponse(f"/requests/{request_id}", status_code=303)
-    existing_total = sum(d.file_size_bytes for d in req.documents)
-    if existing_total + len(content) > MAX_TOTAL_SIZE:
-        flash(request, f"{file.filename}: превышен общий лимит 500 Мб на заявку, не загружен.", "error")
-        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
     if len(req.documents) >= MAX_FILES:
         flash(request, f"{file.filename}: превышен лимит {MAX_FILES} файлов, не загружен.", "error")
         return RedirectResponse(f"/requests/{request_id}", status_code=303)
 
+    existing_total = sum(d.file_size_bytes for d in req.documents)
+    if existing_total >= MAX_TOTAL_SIZE:
+        flash(request, f"{file.filename}: превышен общий лимит 500 Мб на заявку, не загружен.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
     req_dir = os.path.join(UPLOAD_DIR, str(request_id))
     os.makedirs(req_dir, exist_ok=True)
-    safe_name = f"{uuid.uuid4().hex}_{file.filename}"
+    safe_name = _stored_filename(file.filename)
     dest_path = os.path.join(req_dir, safe_name)
-    with open(dest_path, "wb") as f:
-        f.write(content)
 
+    try:
+        file_size = await _save_upload_with_limit(file, dest_path, MAX_FILE_SIZE)
+    except ValueError as exc:
+        if str(exc) == "FILE_TOO_LARGE":
+            flash(request, f"{file.filename}: превышен лимит 50 Мб на файл, не загружен.", "error")
+            return RedirectResponse(f"/requests/{request_id}", status_code=303)
+        raise
+
+    if existing_total + file_size > MAX_TOTAL_SIZE:
+        os.remove(dest_path)
+        flash(request, f"{file.filename}: превышен общий лимит 500 Мб на заявку, не загружен.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    extension = Path(file.filename).suffix.lower()
+    try:
+        mime_ok = _is_actual_mime_allowed(dest_path, extension)
+    except Exception:
+        mime_ok = False
+    if not mime_ok:
+        os.remove(dest_path)
+        flash(request, "Фактическое содержимое файла не соответствует его расширению.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    # Запись документа: file_size_bytes всегда берётся из фактически
+    # сохранённого на диск размера (file_size), а не из заявленного клиентом.
     db.add(
         RequestDocument(
             request_id=request_id,
             document_type_code=document_type_code,
             file_name=file.filename,
             storage_path=dest_path,
-            file_size_bytes=len(content),
+            file_size_bytes=file_size,
             uploaded_by_id=user.id,
         )
     )
