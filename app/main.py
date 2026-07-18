@@ -1,6 +1,7 @@
 import os
 import uuid
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
@@ -22,9 +23,17 @@ from app.models.comment import RequestComment
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
 from app.services import status_machine
-from app.services.documents import available_document_types, missing_required_documents
+from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
+
+def _rub_amount(amount: str | Decimal, rate: Decimal | None) -> Decimal | None:
+    """Decimal-умножение с округлением до копеек — float здесь недопустим
+    (см. аудит ChatGPT: бинарная арифметика float даёт неточности на суммах)."""
+    if rate is None:
+        return None
+    return (Decimal(amount) * Decimal(rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
 
 APP_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
@@ -35,8 +44,20 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 MAX_TOTAL_SIZE = 500 * 1024 * 1024
 MAX_FILES = 50
 
+def _get_session_secret() -> str:
+    secret = os.getenv("SESSION_SECRET")
+    if secret:
+        return secret
+    if os.getenv("ENVIRONMENT", "development") == "development":
+        return "dev-secret-change-me"
+    raise RuntimeError(
+        "SESSION_SECRET не задан. В production обязательна случайная строка "
+        "(например, `openssl rand -hex 32`), небезопасный дефолт использовать нельзя."
+    )
+
+
 app = FastAPI(title="PayTracker MVP")
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "dev-secret-change-me"))
+app.add_middleware(SessionMiddleware, secret_key=_get_session_secret())
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(APP_DIR, "templates"))
 
@@ -175,9 +196,10 @@ def new_request_form(request: Request, db: Session = Depends(get_db)):
     return render(request, "request_new.html", db, editing=False, req=None, **_reference_data(db))
 
 
-def _next_request_number(db: Session) -> str:
-    count = db.query(RequestModel).count()
-    return f"REQ-{count + 1:04d}"
+def _next_request_number(req_id: int) -> str:
+    """Строится из id, а не COUNT(*) — при параллельном создании COUNT(*) может
+    дать одинаковый номер двум заявкам одновременно, id уникален всегда."""
+    return f"REQ-{req_id:06d}"
 
 
 @app.post("/requests/new")
@@ -230,14 +252,14 @@ async def create_request(
     )
     db.add(req)
     db.flush()
-    req.number = _next_request_number(db)
+    req.number = _next_request_number(req.id)
 
     if type == RequestType.PAYMENT.value:
         currency = db.get(Currency, int(currency_id))
         rate, is_stale = get_rate_for_today(db, currency)
         amount_dec = amount or "0"
         rate_at_request = rate
-        amount_rub = (float(amount_dec) * float(rate)) if rate else None
+        amount_rub = _rub_amount(amount_dec, rate)
         req.payment_details = PaymentRequest(
             purpose=purpose,
             payment_purpose=payment_purpose,
@@ -362,7 +384,7 @@ async def edit_request_submit(
         pd.payment_method = PaymentMethod(payment_method)
         pd.agent_id = int(agent_id) if agent_id else None
         pd.rate_at_request = rate
-        pd.amount_rub_at_request = (float(amount_dec) * float(rate)) if rate else None
+        pd.amount_rub_at_request = _rub_amount(amount_dec, rate)
         if rate is None:
             flash(request, "Курс ЦБ не подтверждён — кэш пуст и cbr.ru недоступен.", "error")
     elif req.type == RequestType.PURCHASE:
@@ -529,7 +551,7 @@ def action_mark_done(request: Request, request_id: int, db: Session = Depends(ge
             rate, is_stale = get_rate_for_today(db, req.payment_details.currency)
             if rate is not None:
                 req.payment_details.rate_at_execution = rate
-                req.payment_details.amount_rub_at_execution = float(req.payment_details.amount) * float(rate)
+                req.payment_details.amount_rub_at_execution = _rub_amount(req.payment_details.amount, rate)
         db.commit()
         flash(request, "Исполнение отмечено как завершённое.")
     except status_machine.TransitionError as e:
@@ -570,11 +592,43 @@ async def action_upload_document(
     if not user:
         return RedirectResponse("/login")
 
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    if req.executor_id != user.id:
+        flash(request, "Загружать документы может только назначенный Исполнитель.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    if req.status not in (RequestStatus.IN_PROGRESS, RequestStatus.AWAITING_CUSTOMER_CONFIRMATION, RequestStatus.DOCUMENT_CHECK):
+        flash(request, "Загрузка документов недоступна в текущем статусе заявки.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    doc_type = db.get(DocumentType, document_type_code)
+    if not doc_type:
+        flash(request, "Неизвестный тип документа.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    if doc_type.category != document_category_for_request(req):
+        flash(request, "Этот тип документа не относится к данной заявке.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    if not file or not file.filename:
+        flash(request, "Файл не выбран.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        flash(request, f"{file.filename}: превышен лимит 50 Мб на файл, не загружен.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    existing_total = sum(d.file_size_bytes for d in req.documents)
+    if existing_total + len(content) > MAX_TOTAL_SIZE:
+        flash(request, f"{file.filename}: превышен общий лимит 500 Мб на заявку, не загружен.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    if len(req.documents) >= MAX_FILES:
+        flash(request, f"{file.filename}: превышен лимит {MAX_FILES} файлов, не загружен.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
     req_dir = os.path.join(UPLOAD_DIR, str(request_id))
     os.makedirs(req_dir, exist_ok=True)
     safe_name = f"{uuid.uuid4().hex}_{file.filename}"
     dest_path = os.path.join(req_dir, safe_name)
-    content = await file.read()
     with open(dest_path, "wb") as f:
         f.write(content)
 

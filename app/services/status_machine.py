@@ -71,6 +71,13 @@ def assign_executor(db: Session, req: Request, user: User, executor_id: int) -> 
         raise TransitionError("Назначать исполнителя может только Руководитель.")
     if req.status != RequestStatus.NEW:
         raise TransitionError("Заявка не в статусе 'Новая заявка'.")
+    executor = db.get(User, executor_id)
+    if not executor:
+        raise TransitionError("Исполнитель не найден.")
+    if executor.role not in (UserRole.ISPOLNITEL, UserRole.RUKOVODITEL):
+        raise TransitionError("Назначить можно только Исполнителя или Руководителя.")
+    if not executor.is_active:
+        raise TransitionError("Нельзя назначить неактивного пользователя.")
     req.executor_id = executor_id
     _record(
         db, req, RequestStatus.NEW, RequestStatus.IN_PROGRESS, user, None, AuditActionType.EXECUTOR_ASSIGNED

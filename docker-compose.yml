@@ -23,6 +23,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://paytracker:${POSTGRES_PASSWORD:?укажи POSTGRES_PASSWORD в .env}@db:5432/paytracker
       SESSION_SECRET: ${SESSION_SECRET:?укажи SESSION_SECRET в .env}
+      ENVIRONMENT: production
       UPLOAD_DIR: /app/uploads
     volumes:
       - uploads_data:/app/uploads
