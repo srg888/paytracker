@@ -19,7 +19,8 @@ from app.models.currency import Currency
 from app.models.division import Division
 from app.models.document import RequestDocument, RequestDocumentRequirement
 from app.models.document_type import DocumentType
-from app.models.enums import AuditActionType, PaymentMethod, RequestStatus, RequestType, UserRole
+from app.models.enums import AuditActionType, PaymentMethod, PaymentTermsDecision, RequestStatus, RequestType, UserRole
+from app.models.payment_terms_proposal import PaymentTermsProposal
 from app.models.request import ConsultationRequest, PaymentRequest, PurchaseRequest, Request as RequestModel
 from app.models.comment import RequestComment
 from app.models.delegation import Delegation
@@ -169,8 +170,23 @@ def _get_session_secret() -> str:
 app = FastAPI(title="PayTracker MVP")
 app.add_middleware(SessionMiddleware, secret_key=_get_session_secret())
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 templates = Jinja2Templates(directory=os.path.join(APP_DIR, "templates"))
 
+
+_STATUS_RU = {
+    "draft": "Черновик",
+    "new": "Новая заявка",
+    "in_progress": "В работе",
+    "clarification": "Уточнение",
+    "rejected": "Отклонена",
+    "archived": "Архив",
+    "awaiting_customer_confirmation": "Ожидает подтверждения",
+    "document_check": "Проверка документов",
+    "closed": "Закрыта",
+}
+
+templates.env.globals["status_ru"] = _STATUS_RU.get
 
 def render(request: Request, template: str, db: Session, **context):
     current_user = get_current_user(request, db)
@@ -281,10 +297,7 @@ def requests_list(request: Request, db: Session = Depends(get_db)):
 
     query = db.query(RequestModel)
     if user.role == UserRole.ZAKAZCHIK:
-        query = query.filter(RequestModel.created_by_id == user.id)
-    elif user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        query = query.filter(RequestModel.executor_id == user.id)
-    # Руководитель (и активный делегат) видит все заявки — многоюрлицовая изоляция не нужна.
+        query = query.filter(RequestModel.requester_id == user.id)
     requests_ = query.order_by(RequestModel.id.desc()).all()
     return render(request, "requests_list.html", db, requests=requests_)
 
@@ -375,7 +388,7 @@ async def create_request(
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
     req = RequestModel(
-        number="",  # выставим после flush, когда узнаем id
+        number="",
         type=RequestType(req_type),
         status=RequestStatus.DRAFT,
         title=title,
@@ -383,12 +396,16 @@ async def create_request(
         expected_date=exp_date,
         division_id=division_id,
         created_by_id=user.id,
+        requester_id=user.id,
     )
     db.add(req)
     db.flush()
     req.number = _next_request_number(req.id)
 
     if req_type == RequestType.PAYMENT.value:
+        if not currency_id:
+            flash(request, "Выберите валюту.", "error")
+            return RedirectResponse(f"/requests/new/{req_type}", status_code=303)
         currency = db.get(Currency, int(currency_id))
         rate, is_stale = get_rate_for_today(db, currency)
         amount_dec = amount or "0"
@@ -406,7 +423,7 @@ async def create_request(
             account_number_iban=account_number_iban,
             swift_bic=swift_bic,
             additional_payment_info=additional_payment_info or None,
-            payment_method=PaymentMethod(payment_method),
+            payment_method=PaymentMethod(payment_method) if payment_method else None,
             agent_id=int(agent_id) if agent_id else None,
             rate_at_request=rate_at_request,
             amount_rub_at_request=amount_rub,
@@ -500,6 +517,9 @@ async def edit_request_submit(
     req.description = description or None
 
     if req.type == RequestType.PAYMENT:
+        if not currency_id:
+            flash(request, "Выберите валюту.", "error")
+            return RedirectResponse(f"/requests/{request_id}/edit", status_code=303)
         pd = req.payment_details
         currency = db.get(Currency, int(currency_id))
         rate, is_stale = get_rate_for_today(db, currency)
@@ -515,7 +535,7 @@ async def edit_request_submit(
         pd.account_number_iban = account_number_iban
         pd.swift_bic = swift_bic
         pd.additional_payment_info = additional_payment_info or None
-        pd.payment_method = PaymentMethod(payment_method)
+        pd.payment_method = PaymentMethod(payment_method) if payment_method else None
         pd.agent_id = int(agent_id) if agent_id else None
         pd.rate_at_request = rate
         pd.amount_rub_at_request = _rub_amount(amount_dec, rate)
@@ -588,12 +608,12 @@ def delete_document(request: Request, request_id: int, doc_id: int, db: Session 
 
 def _build_detail_context(request: Request, db: Session, req: RequestModel, user: User):
     is_creator = req.created_by_id == user.id
+    is_requester = req.requester_id == user.id
     is_executor = req.executor_id == user.id
     acting_ruk = is_acting_rukovoditel(db, user)
 
     rejection_reason = None
     if req.status == RequestStatus.REJECTED:
-        # последняя запись истории с переходом в REJECTED содержит причину
         for h in reversed(req.status_history):
             if h.to_status == RequestStatus.REJECTED:
                 rejection_reason = h.comment
@@ -605,6 +625,9 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         RequestStatus.DOCUMENT_CHECK,
     )
     attachments = [d for d in req.documents if d.document_type_code is None]
+    last_proposal = None
+    if req.payment_details and req.payment_details.terms_proposals:
+        last_proposal = req.payment_details.terms_proposals[-1]
 
     return dict(
         req=req,
@@ -612,13 +635,20 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         can_edit=is_creator and req.status == RequestStatus.DRAFT,
         can_assign=acting_ruk and req.status == RequestStatus.NEW,
         can_reassign=acting_ruk and req.status == RequestStatus.IN_PROGRESS,
+        can_self_assign=user.role in (UserRole.ISPOLNITEL, UserRole.RUKOVODITEL) and req.status == RequestStatus.NEW and not is_executor,
         can_acknowledge_rejection=is_creator and req.status == RequestStatus.REJECTED,
         rejection_reason=rejection_reason,
-        can_request_clarification=is_executor and req.status == RequestStatus.IN_PROGRESS,
-        can_answer_clarification=is_creator and req.status == RequestStatus.CLARIFICATION,
+        can_request_clarification=(is_executor or acting_ruk) and req.status in (RequestStatus.IN_PROGRESS, RequestStatus.NEW),
+        can_answer_clarification=is_requester and req.status == RequestStatus.CLARIFICATION,
+        can_propose_terms=is_executor and req.status == RequestStatus.IN_PROGRESS and req.payment_details is not None,
+        can_accept_terms=is_requester and req.status == RequestStatus.TERMS_PROPOSED,
+        can_reject_terms=is_requester and req.status == RequestStatus.TERMS_PROPOSED,
+        last_terms_proposal=last_proposal,
         can_mark_done=is_executor and req.status == RequestStatus.IN_PROGRESS,
-        can_confirm_execution=(is_creator or acting_ruk) and req.status == RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
-        can_confirm_documents=is_executor and req.status == RequestStatus.DOCUMENT_CHECK,
+        can_confirm_execution=(is_requester or acting_ruk) and req.status == RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
+        can_send_to_manager=is_executor and req.status == RequestStatus.DOCUMENT_CHECK,
+        can_manager_close=acting_ruk and req.status == RequestStatus.MANAGER_REVIEW,
+        can_rework=acting_ruk and req.status == RequestStatus.MANAGER_REVIEW,
         can_upload_document=can_upload_document,
         acting_ruk=acting_ruk,
         attachments=attachments,
@@ -639,6 +669,7 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
                 RequestDocumentRequirement.request_id == req.id
             )
         },
+        agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
     )
 
 
@@ -753,12 +784,169 @@ def action_confirm_documents(request: Request, request_id: int, db: Session = De
     return _do_transition(request, db, request_id, status_machine.confirm_documents_complete)
 
 
-@app.post("/requests/{request_id}/comments")
-def action_add_comment(request: Request, request_id: int, content: str = Form(...), db: Session = Depends(get_db)):
+@app.post("/requests/{request_id}/self_assign")
+def action_self_assign(request: Request, request_id: int, db: Session = Depends(get_db)):
+    return _do_transition(request, db, request_id, status_machine.self_assign)
+
+
+@app.post("/requests/{request_id}/propose_terms")
+def action_propose_terms(
+    request: Request,
+    request_id: int,
+    db: Session = Depends(get_db),
+    proposed_payment_method: str = Form(...),
+    proposed_agent_id: str = Form(""),
+    commission_amount: str = Form(...),
+    proposed_rate: str = Form(...),
+):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    db.add(RequestComment(request_id=request_id, author_id=user.id, content=content))
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    if not req.payment_details:
+        flash(request, "Согласование условий только для платежей.", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    try:
+        proposal = PaymentTermsProposal(
+            payment_request_id=req.payment_details.request_id,
+            proposed_payment_method=PaymentMethod(proposed_payment_method),
+            proposed_agent_id=int(proposed_agent_id) if proposed_agent_id else None,
+            commission_amount=commission_amount,
+            proposed_rate=proposed_rate,
+            proposed_by_id=user.id,
+        )
+        db.add(proposal)
+        db.flush()
+        status_machine.propose_terms(db, req, user)
+        db.commit()
+        flash(request, "Условия предложены.")
+    except status_machine.TransitionError as e:
+        db.rollback()
+        flash(request, str(e), "error")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+@app.post("/requests/{request_id}/accept_terms")
+def action_accept_terms(request: Request, request_id: int, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    try:
+        if req.payment_details and req.payment_details.terms_proposals:
+            last = req.payment_details.terms_proposals[-1]
+            last.decision = PaymentTermsDecision.ACCEPTED
+            last.decided_by_id = user.id
+            req.payment_details.payment_method = last.proposed_payment_method
+            req.payment_details.agent_id = last.proposed_agent_id
+            req.payment_details.agreed_commission_amount = last.commission_amount
+            req.payment_details.agreed_rate = last.proposed_rate
+        status_machine.accept_terms(db, req, user)
+        db.commit()
+        flash(request, "Условия приняты.")
+    except status_machine.TransitionError as e:
+        db.rollback()
+        flash(request, str(e), "error")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+@app.post("/requests/{request_id}/reject_terms")
+def action_reject_terms(
+    request: Request, request_id: int, reason: str = Form(...), db: Session = Depends(get_db)
+):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    try:
+        if req.payment_details and req.payment_details.terms_proposals:
+            last = req.payment_details.terms_proposals[-1]
+            last.decision = PaymentTermsDecision.REJECTED
+            last.decision_comment = reason
+            last.decided_by_id = user.id
+        status_machine.reject_terms(db, req, user, reason)
+        db.commit()
+        flash(request, "Условия отклонены.")
+    except status_machine.TransitionError as e:
+        db.rollback()
+        flash(request, str(e), "error")
+    return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+
+@app.post("/requests/{request_id}/manager_close")
+def action_manager_close(request: Request, request_id: int, db: Session = Depends(get_db)):
+    return _do_transition(request, db, request_id, status_machine.manager_close)
+
+
+@app.post("/requests/{request_id}/rework")
+def action_rework(
+    request: Request, request_id: int, reason: str = Form(...), db: Session = Depends(get_db)
+):
+    return _do_transition(request, db, request_id, status_machine.rework_from_manager, reason)
+
+
+@app.post("/requests/{request_id}/comments")
+async def action_add_comment(
+    request: Request,
+    request_id: int,
+    content: str = Form(...),
+    file: UploadFile = File(None),
+    db: Session = Depends(get_db),
+):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    comment = RequestComment(request_id=request_id, author_id=user.id, content=content)
+    db.add(comment)
+    db.flush()
+
+    if file and file.filename:
+        is_valid, validation_error = _validate_uploaded_file(file)
+        if not is_valid:
+            flash(request, validation_error or "Недопустимый файл.", "error")
+            db.rollback()
+            return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+        req_dir = os.path.join(UPLOAD_DIR, str(request_id))
+        os.makedirs(req_dir, exist_ok=True)
+        safe_name = _stored_filename(file.filename)
+        dest_path = os.path.join(req_dir, safe_name)
+
+        try:
+            file_size = await _save_upload_with_limit(file, dest_path, MAX_FILE_SIZE)
+        except ValueError as exc:
+            if str(exc) == "FILE_TOO_LARGE":
+                flash(request, f"{file.filename}: превышен лимит 50 Мб на файл, не загружен.", "error")
+                db.rollback()
+                return RedirectResponse(f"/requests/{request_id}", status_code=303)
+            raise
+
+        extension = Path(file.filename).suffix.lower()
+        try:
+            mime_ok = _is_actual_mime_allowed(dest_path, extension)
+        except Exception:
+            mime_ok = False
+        if not mime_ok:
+            os.remove(dest_path)
+            flash(request, "Фактическое содержимое файла не соответствует его расширению.", "error")
+            db.rollback()
+            return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+        db.add(RequestDocument(
+            request_id=request_id,
+            comment_id=comment.id,
+            file_name=file.filename,
+            storage_path=dest_path,
+            file_size_bytes=file_size,
+            uploaded_by_id=user.id,
+        ))
+
     db.commit()
     return RedirectResponse(f"/requests/{request_id}", status_code=303)
 

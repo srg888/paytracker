@@ -26,6 +26,7 @@ services:
       ENVIRONMENT: production
       UPLOAD_DIR: /app/uploads
     volumes:
+      - .:/app
       - uploads_data:/app/uploads
     ports:
       - "0.0.0.0:8000:8000"

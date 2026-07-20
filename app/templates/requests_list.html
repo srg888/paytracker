@@ -8,23 +8,28 @@
     <thead>
         <tr>
             <th>№</th><th>Тип</th><th>Название</th><th>Статус</th>
-            <th>Заказчик</th><th>Исполнитель</th><th>Подразделение</th><th>Срок</th>
+            <th>Заказчик</th><th>Подразделение</th>
+            <th>Получатель</th><th>Сумма</th><th>Валюта</th>
+            <th>Исполнитель</th><th>Срок</th>
         </tr>
     </thead>
     <tbody>
         {% for r in requests %}
         <tr onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
             <td>{{ r.number }}</td>
-            <td>{{ r.type.value }}</td>
+            <td>{{ {"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"}.get(r.type.value, r.type.value) }}</td>
             <td>{{ r.title }}</td>
-            <td><span class="status-pill status-{{ r.status.value }}">{{ r.status.value }}</span></td>
+            <td><span class="status-pill status-{{ r.status.value }}">{{ status_ru(r.status.value) or r.status.value }}</span></td>
             <td>{{ r.created_by.full_name }}</td>
-            <td>{{ r.executor.full_name if r.executor else "—" }}</td>
             <td>{{ r.division.name }}</td>
+            <td>{{ r.payment_details.recipient_name if r.payment_details else "—" }}</td>
+            <td>{{ r.payment_details.amount if r.payment_details else "—" }}</td>
+            <td>{{ r.payment_details.currency.code if r.payment_details else "—" }}</td>
+            <td>{{ r.executor.full_name if r.executor else "—" }}</td>
             <td>{{ r.expected_date or "—" }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8">Заявок пока нет.</td></tr>
+        <tr><td colspan="11">Заявок пока нет.</td></tr>
         {% endfor %}
     </tbody>
 </table>

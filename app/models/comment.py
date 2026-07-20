@@ -19,3 +19,6 @@ class RequestComment(Base):
 
     request: Mapped["Request"] = relationship(back_populates="comments")
     author: Mapped["User"] = relationship()
+    documents: Mapped[list["RequestDocument"]] = relationship(
+        back_populates="comment", cascade="all, delete-orphan"
+    )

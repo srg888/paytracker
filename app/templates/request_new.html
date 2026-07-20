@@ -38,9 +38,6 @@
         </div>
     </div>
 
-    <label>Описание</label>
-    <textarea name="description" rows="2">{{ req.description if editing and req.description else '' }}</textarea>
-
     {% if req_type == "payment" or (editing and req.type.value == "payment") %}
     <!-- ПЛАТЁЖ -->
     <h3>Платёж</h3>
@@ -56,7 +53,8 @@
         </div>
         <div>
             <label>Валюта</label>
-            <select name="currency_id">
+            <select name="currency_id" required>
+                <option value="">Выбрать валюту</option>
                 {% for c in currencies %}
                 <option value="{{ c.id }}" {{ "selected" if editing and req.payment_details and req.payment_details.currency_id == c.id else "" }}>{{ c.code }}</option>
                 {% endfor %}
@@ -132,9 +130,8 @@
         {% if doc.document_type_code is none %}
         <li>
             {{ doc.file_name }}
-            <form method="post" action="/requests/{{ req.id }}/documents/{{ doc.id }}/delete" style="display:inline">
-                <button type="submit" class="danger" style="padding:2px 8px;font-size:12px;margin:0">удалить</button>
-            </form>
+            <button type="button" class="danger" style="padding:2px 8px;font-size:12px;margin:0"
+                    onclick="fetch('/requests/{{ req.id }}/documents/{{ doc.id }}/delete',{method:'POST'}).then(()=>location.reload())">удалить</button>
         </li>
         {% endif %}
         {% endfor %}

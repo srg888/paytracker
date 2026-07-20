@@ -4,12 +4,12 @@
 
 <a href="/requests">&larr; К списку заявок</a>
 <h2>{{ req.number }} — {{ req.title }}
-    <span class="status-pill status-{{ req.status.value }}">{{ req.status.value }}</span>
+    <span class="status-pill status-{{ req.status.value }}">{{ status_ru(req.status.value) or req.status.value }}</span>
 </h2>
 
 <div class="card">
     <p><b>Тип:</b> {{ req.type.value }}</p>
-    <p><b>Заказчик:</b> {{ req.created_by.full_name }} | <b>Подразделение:</b> {{ req.division.name }}</p>
+    <p><b>Заказчик:</b> {{ req.requester.full_name }}{% if req.requester_id != req.created_by_id %} (создал {{ req.created_by.full_name }}){% endif %} | <b>Подразделение:</b> {{ req.division.name }}</p>
     <p><b>Исполнитель:</b> {{ req.executor.full_name if req.executor else "не назначен" }}</p>
     <p><b>Ожидаемый срок:</b> {{ req.expected_date or "—" }}</p>
     {% if req.description %}<p><b>Описание:</b> {{ req.description }}</p>{% endif %}
@@ -123,14 +123,67 @@
     </form>
     {% endif %}
 
-    {% if can_confirm_documents %}
+    {% if can_self_assign %}
+    <form method="post" action="/requests/{{ req.id }}/self_assign" style="display:inline">
+        <button type="submit">Назначить себя исполнителем</button>
+    </form>
+    {% endif %}
+
+    {% if can_propose_terms %}
+    <form method="post" action="/requests/{{ req.id }}/propose_terms">
+        <label>Способ оплаты</label>
+        <select name="proposed_payment_method">
+            <option value="bank">Банковский перевод</option>
+            <option value="agent">Через агента</option>
+        </select>
+        <label>Агент (если через агента)</label>
+        <select name="proposed_agent_id">
+            <option value="">—</option>
+            {% for a in agents %}<option value="{{ a.id }}">{{ a.code }}</option>{% endfor %}
+        </select>
+        <label>Сумма комиссии</label>
+        <input type="text" name="commission_amount" required>
+        <label>Курс</label>
+        <input type="text" name="proposed_rate" value="{{ last_terms_proposal.proposed_rate if last_terms_proposal else '' }}" required>
+        <button type="submit">Предложить условия</button>
+    </form>
+    {% endif %}
+
+    {% if can_accept_terms and last_terms_proposal %}
+    <form method="post" action="/requests/{{ req.id }}/accept_terms" style="display:inline">
+        <button type="submit">Принять условия (комиссия {{ last_terms_proposal.commission_amount }}, курс {{ last_terms_proposal.proposed_rate }})</button>
+    </form>
+    <form method="post" action="/requests/{{ req.id }}/reject_terms">
+        <label>Причина отклонения</label>
+        <textarea name="reason" rows="2" required></textarea>
+        <button type="submit" class="danger">Отклонить условия</button>
+    </form>
+    {% endif %}
+
+    {% if can_send_to_manager %}
     <form method="post" action="/requests/{{ req.id }}/confirm_documents" style="display:inline">
-        <button type="submit">Комплект подтверждён — закрыть заявку</button>
+        <button type="submit">Комплект подтверждён — отправить руководителю</button>
+    </form>
+    {% endif %}
+
+    {% if can_manager_close %}
+    <form method="post" action="/requests/{{ req.id }}/manager_close" style="display:inline">
+        <button type="submit">Закрыть заявку</button>
+    </form>
+    {% endif %}
+
+    {% if can_rework %}
+    <form method="post" action="/requests/{{ req.id }}/rework">
+        <label>Причина возврата на доработку</label>
+        <textarea name="reason" rows="2" required></textarea>
+        <button type="submit" class="danger">Отправить на доработку</button>
     </form>
     {% endif %}
 
     {% if not can_submit and not can_assign and not can_reassign and not can_acknowledge_rejection and not can_request_clarification
-        and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_confirm_documents %}
+        and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_self_assign
+        and not can_propose_terms and not can_accept_terms and not can_reject_terms and not can_send_to_manager
+        and not can_manager_close and not can_rework %}
     <p><i>Доступных действий нет.</i></p>
     {% endif %}
 </div>
@@ -218,12 +271,20 @@
     <div class="comment">
         <div class="meta">{{ c.author.full_name }} — {{ c.created_at.strftime("%d.%m.%Y %H:%M") }}</div>
         {{ c.content }}
+        {% if c.documents %}
+        <div style="margin-top:6px;font-size:13px">
+            {% for d in c.documents %}
+            <a href="/uploads/{{ d.request_id }}/{{ d.storage_path.split('/')[-1] }}">{{ d.file_name }}</a>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
     </div>
     {% else %}
     <p><i>Комментариев пока нет.</i></p>
     {% endfor %}
-    <form method="post" action="/requests/{{ req.id }}/comments">
+    <form method="post" action="/requests/{{ req.id }}/comments" enctype="multipart/form-data">
         <textarea name="content" rows="2" placeholder="Написать комментарий..." required></textarea>
+        <input type="file" name="file" style="margin:8px 0">
         <button type="submit">Отправить</button>
     </form>
 </div>
@@ -233,7 +294,7 @@
     {% for h in req.status_history %}
     <div class="history-item">
         {{ h.changed_at.strftime("%d.%m.%Y %H:%M") }} — {{ h.changed_by.full_name }}:
-        {{ h.from_status.value if h.from_status else "—" }} → {{ h.to_status.value }}
+        {{ status_ru(h.from_status.value) if h.from_status else "—" }} → {{ status_ru(h.to_status.value) }}
         {% if h.comment %}<i>({{ h.comment }})</i>{% endif %}
     </div>
     {% endfor %}

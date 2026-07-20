@@ -22,6 +22,7 @@ class RequestDocument(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("requests.id", ondelete="CASCADE"), nullable=False)
+    comment_id: Mapped[int | None] = mapped_column(ForeignKey("request_comments.id", ondelete="CASCADE"), nullable=True)
     document_type_code: Mapped[str | None] = mapped_column(ForeignKey("document_types.code"), nullable=True)
 
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -32,6 +33,7 @@ class RequestDocument(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     request: Mapped["Request"] = relationship(back_populates="documents")
+    comment: Mapped["RequestComment | None"] = relationship(back_populates="documents")
     document_type: Mapped["DocumentType | None"] = relationship()
     uploaded_by: Mapped["User"] = relationship()
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -38,6 +38,7 @@ class Request(Base, TimestampMixin):
 
     division_id: Mapped[int] = mapped_column(ForeignKey("divisions.id"), nullable=False)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    requester_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     executor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -45,6 +46,7 @@ class Request(Base, TimestampMixin):
 
     division: Mapped["Division"] = relationship()
     created_by: Mapped["User"] = relationship(foreign_keys=[created_by_id], back_populates="created_requests")
+    requester: Mapped["User"] = relationship(foreign_keys=[requester_id], back_populates="requested_requests")
     executor: Mapped["User | None"] = relationship(foreign_keys=[executor_id], back_populates="executed_requests")
 
     payment_details: Mapped["PaymentRequest | None"] = relationship(
@@ -81,12 +83,11 @@ class PaymentRequest(Base):
         ForeignKey("requests.id", ondelete="CASCADE"), primary_key=True
     )
 
-    purpose: Mapped[str] = mapped_column(Text, nullable=False)  # Описание / цель платежа
-    payment_purpose: Mapped[str] = mapped_column(Text, nullable=False)  # Назначение платежа
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    payment_purpose: Mapped[str] = mapped_column(Text, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency_id: Mapped[int] = mapped_column(ForeignKey("currencies.id"), nullable=False)
 
-    # Реквизиты получателя
     recipient_name: Mapped[str] = mapped_column(String(255), nullable=False)
     recipient_country: Mapped[str] = mapped_column(String(128), nullable=False)
     recipient_address: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -95,18 +96,23 @@ class PaymentRequest(Base):
     swift_bic: Mapped[str] = mapped_column(String(16), nullable=False)
     additional_payment_info: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    payment_method: Mapped[PaymentMethod] = mapped_column(PAYMENT_METHOD_ENUM, nullable=False)
+    payment_method: Mapped[PaymentMethod | None] = mapped_column(PAYMENT_METHOD_ENUM, nullable=True)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
 
-    # Курс ЦБ: на дату заявки (инфо) и на дату фактического исполнения (используется в отчётах)
     rate_at_request: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     amount_rub_at_request: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     rate_at_execution: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     amount_rub_at_execution: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
 
+    agreed_commission_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    agreed_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+
     request: Mapped["Request"] = relationship(back_populates="payment_details")
     currency: Mapped["Currency"] = relationship()
     agent: Mapped["Agent | None"] = relationship()
+    terms_proposals: Mapped[list["PaymentTermsProposal"]] = relationship(
+        back_populates="payment_request", cascade="all, delete-orphan"
+    )
 
 
 class PurchaseRequest(Base):
@@ -120,7 +126,7 @@ class PurchaseRequest(Base):
 
     buyer_company_id: Mapped[int] = mapped_column(ForeignKey("buyer_companies.id"), nullable=False)
     payment_method: Mapped[PaymentMethod] = mapped_column(PAYMENT_METHOD_ENUM, nullable=False)
-    markup_notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # расчёт наценки, комментарий
+    markup_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     request: Mapped["Request"] = relationship(back_populates="purchase_details")

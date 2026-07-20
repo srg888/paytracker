@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
-from app.models.enums import AuditActionType, RequestStatus, UserRole
+from app.models.enums import AuditActionType, RequestStatus, RequestType, UserRole
 from app.models.request import Request
 from app.models.status_history import RequestStatusHistory
 from app.models.user import User
@@ -56,7 +56,6 @@ def _record(
 
 
 def submit(db: Session, req: Request, user: User) -> None:
-    """Черновик -> Новая заявка. Только автор заявки."""
     if req.created_by_id != user.id:
         raise TransitionError("Подать заявку может только её автор.")
     if req.status != RequestStatus.DRAFT:
@@ -66,10 +65,6 @@ def submit(db: Session, req: Request, user: User) -> None:
 
 
 def assign_executor(db: Session, req: Request, user: User, executor_id: int) -> None:
-    """Назначение или переназначение исполнителя.
-    Новая заявка -> В работе (первичное назначение).
-    В работе -> В работе (переназначение).
-    Только Руководитель или его временный заместитель."""
     if not is_acting_rukovoditel(db, user):
         raise TransitionError("Назначать исполнителя может только Руководитель.")
     if req.status not in (RequestStatus.NEW, RequestStatus.IN_PROGRESS):
@@ -94,8 +89,19 @@ def assign_executor(db: Session, req: Request, user: User, executor_id: int) -> 
         )
 
 
+def self_assign(db: Session, req: Request, user: User) -> None:
+    """Новая заявка -> В работе. Исполнитель может взять заявку самостоятельно (BR-023)."""
+    if user.role not in (UserRole.ISPOLNITEL, UserRole.RUKOVODITEL):
+        raise TransitionError("Взять заявку может только Исполнитель или Руководитель.")
+    if not user.is_active:
+        raise TransitionError("Неактивный пользователь не может взять заявку.")
+    if req.status != RequestStatus.NEW:
+        raise TransitionError("Заявка не в статусе 'Новая заявка'.")
+    req.executor_id = user.id
+    _record(db, req, RequestStatus.NEW, RequestStatus.IN_PROGRESS, user, None, AuditActionType.EXECUTOR_SELF_ASSIGNED)
+
+
 def reject(db: Session, req: Request, user: User, reason: str) -> None:
-    """Новая заявка -> Отклонена. Руководитель или его временный заместитель."""
     if not is_acting_rukovoditel(db, user):
         raise TransitionError("Отклонить заявку может только Руководитель.")
     if req.status != RequestStatus.NEW:
@@ -106,8 +112,7 @@ def reject(db: Session, req: Request, user: User, reason: str) -> None:
 
 
 def acknowledge_rejection(db: Session, req: Request, user: User) -> None:
-    """Отклонена -> Архив. Неотменяемое действие, только автор заявки."""
-    if req.created_by_id != user.id:
+    if req.requester_id != user.id:
         raise TransitionError("Только автор заявки может подтвердить ознакомление.")
     if req.status != RequestStatus.REJECTED:
         raise TransitionError("Заявка не в статусе 'Отклонена'.")
@@ -118,31 +123,71 @@ def acknowledge_rejection(db: Session, req: Request, user: User) -> None:
 
 
 def request_clarification(db: Session, req: Request, user: User, question: str) -> None:
-    """В работе -> Уточнение. Только назначенный Исполнитель."""
-    if req.executor_id != user.id:
-        raise TransitionError("Запросить уточнение может только назначенный Исполнитель.")
-    if req.status != RequestStatus.IN_PROGRESS:
-        raise TransitionError("Заявка не в статусе 'В работе'.")
+    """В работе -> Уточнение или Новая -> Уточнение (до назначения, BR-042)."""
+    if user.role not in (UserRole.ISPOLNITEL, UserRole.RUKOVODITEL):
+        raise TransitionError("Запросить уточнение может Исполнитель или Руководитель.")
+    if req.status not in (RequestStatus.IN_PROGRESS, RequestStatus.NEW):
+        raise TransitionError("Заявка не в статусе 'В работе' или 'Новая заявка'.")
     _record(
-        db, req, RequestStatus.IN_PROGRESS, RequestStatus.CLARIFICATION, user, question,
+        db, req, req.status, RequestStatus.CLARIFICATION, user, question,
         AuditActionType.STATUS_CHANGE,
     )
 
 
 def answer_clarification(db: Session, req: Request, user: User, answer: str) -> None:
-    """Уточнение -> В работе. Только автор заявки."""
-    if req.created_by_id != user.id:
-        raise TransitionError("Ответить может только автор заявки.")
+    if req.requester_id != user.id:
+        raise TransitionError("Ответить может только Заказчик заявки.")
     if req.status != RequestStatus.CLARIFICATION:
         raise TransitionError("Заявка не в статусе 'Уточнение'.")
+    prev_status = RequestStatus.IN_PROGRESS
+    for h in reversed(req.status_history):
+        if h.to_status == RequestStatus.CLARIFICATION and h.from_status is not None:
+            prev_status = h.from_status
+            break
     _record(
-        db, req, RequestStatus.CLARIFICATION, RequestStatus.IN_PROGRESS, user, answer,
+        db, req, RequestStatus.CLARIFICATION, prev_status, user, answer,
         AuditActionType.STATUS_CHANGE,
     )
 
 
+def propose_terms(db: Session, req: Request, user: User) -> None:
+    if req.executor_id != user.id:
+        raise TransitionError("Предложить условия может только назначенный Исполнитель.")
+    if req.status != RequestStatus.IN_PROGRESS:
+        raise TransitionError("Заявка не в статусе 'В работе'.")
+    if not req.payment_details:
+        raise TransitionError("Согласование условий только для платежей.")
+    _record(
+        db, req, RequestStatus.IN_PROGRESS, RequestStatus.TERMS_PROPOSED, user, None,
+        AuditActionType.TERMS_PROPOSED,
+    )
+
+
+def accept_terms(db: Session, req: Request, user: User) -> None:
+    if req.requester_id != user.id:
+        raise TransitionError("Принять условия может только Заказчик заявки.")
+    if req.status != RequestStatus.TERMS_PROPOSED:
+        raise TransitionError("Заявка не в статусе 'Условия предложены'.")
+    _record(
+        db, req, RequestStatus.TERMS_PROPOSED, RequestStatus.IN_PROGRESS, user, None,
+        AuditActionType.TERMS_ACCEPTED,
+    )
+
+
+def reject_terms(db: Session, req: Request, user: User, reason: str) -> None:
+    if req.requester_id != user.id:
+        raise TransitionError("Отклонить условия может только Заказчик заявки.")
+    if req.status != RequestStatus.TERMS_PROPOSED:
+        raise TransitionError("Заявка не в статусе 'Условия предложены'.")
+    if not reason or not reason.strip():
+        raise TransitionError("Укажите причину отклонения условий.")
+    _record(
+        db, req, RequestStatus.TERMS_PROPOSED, RequestStatus.IN_PROGRESS, user, reason,
+        AuditActionType.TERMS_REJECTED,
+    )
+
+
 def mark_execution_done(db: Session, req: Request, user: User) -> None:
-    """В работе -> Ожидает подтверждения Заказчика. Только назначенный Исполнитель."""
     if req.executor_id != user.id:
         raise TransitionError("Завершить исполнение может только назначенный Исполнитель.")
     if req.status != RequestStatus.IN_PROGRESS:
@@ -154,11 +199,9 @@ def mark_execution_done(db: Session, req: Request, user: User) -> None:
 
 
 def confirm_execution(db: Session, req: Request, user: User) -> None:
-    """Ожидает подтверждения Заказчика -> Проверка комплектности документов.
-    Неотменяемое действие. Автор заявки, Руководитель или его заместитель."""
-    is_author = req.created_by_id == user.id
+    is_requester = req.requester_id == user.id
     acting_ruk = is_acting_rukovoditel(db, user)
-    if not is_author and not acting_ruk:
+    if not is_requester and not acting_ruk:
         raise TransitionError("Подтвердить исполнение может автор заявки или Руководитель.")
     if req.status != RequestStatus.AWAITING_CUSTOMER_CONFIRMATION:
         raise TransitionError("Заявка не в статусе 'Ожидает подтверждения Заказчика'.")
@@ -169,10 +212,10 @@ def confirm_execution(db: Session, req: Request, user: User) -> None:
 
 
 def confirm_documents_complete(db: Session, req: Request, user: User) -> None:
-    """Проверка комплектности документов -> Закрыта. Только назначенный Исполнитель,
-    и только если все обязательные документы по справочнику загружены."""
+    """Проверка комплектности документов -> На проверке у Руководителя.
+    Исполнитель отправляет комплект на проверку Руководителю (BR-110)."""
     if req.executor_id != user.id:
-        raise TransitionError("Подтвердить комплект может только назначенный Исполнитель.")
+        raise TransitionError("Отправить на проверку может только назначенный Исполнитель.")
     if req.status != RequestStatus.DOCUMENT_CHECK:
         raise TransitionError("Заявка не в статусе 'Проверка комплектности документов'.")
     missing = missing_required_documents(db, req)
@@ -180,6 +223,33 @@ def confirm_documents_complete(db: Session, req: Request, user: User) -> None:
         names = ", ".join(f"{d.code} ({d.name})" for d in missing)
         raise TransitionError(f"Не хватает обязательных документов: {names}")
     _record(
-        db, req, RequestStatus.DOCUMENT_CHECK, RequestStatus.CLOSED, user, None,
-        AuditActionType.DOCUMENTS_CONFIRMED,
+        db, req, RequestStatus.DOCUMENT_CHECK, RequestStatus.MANAGER_REVIEW, user, None,
+        AuditActionType.SENT_FOR_MANAGER_REVIEW,
+    )
+
+
+def manager_close(db: Session, req: Request, user: User) -> None:
+    """На проверке у Руководителя -> Закрыта. Только Руководитель (BR-110, BR-111)."""
+    if not is_acting_rukovoditel(db, user):
+        raise TransitionError("Закрыть заявку может только Руководитель.")
+    if req.status != RequestStatus.MANAGER_REVIEW:
+        raise TransitionError("Заявка не в статусе 'На проверке у Руководителя'.")
+    _record(
+        db, req, RequestStatus.MANAGER_REVIEW, RequestStatus.CLOSED, user, None,
+        AuditActionType.CLOSED_BY_MANAGER,
+    )
+
+
+def rework_from_manager(db: Session, req: Request, user: User, reason: str) -> None:
+    """На проверке у Руководителя -> Проверка комплектности документов.
+    Руководитель возвращает на доработку с комментарием (BR-111)."""
+    if not is_acting_rukovoditel(db, user):
+        raise TransitionError("Отправить на доработку может только Руководитель.")
+    if req.status != RequestStatus.MANAGER_REVIEW:
+        raise TransitionError("Заявка не в статусе 'На проверке у Руководителя'.")
+    if not reason or not reason.strip():
+        raise TransitionError("Укажите причину возврата на доработку.")
+    _record(
+        db, req, RequestStatus.MANAGER_REVIEW, RequestStatus.DOCUMENT_CHECK, user, reason,
+        AuditActionType.REWORK_REQUESTED,
     )
