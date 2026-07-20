@@ -2,181 +2,187 @@
 {% block title %}{{ req.number }} — PayTracker{% endblock %}
 {% block content %}
 
-<a href="/requests">&larr; К списку заявок</a>
-<h2>{{ req.number }} — {{ req.title }}
+<a href="/requests" style="font-family:'JetBrains Mono',monospace;font-size:12px;text-transform:uppercase;letter-spacing:0.05em">&larr; [ К СПИСКУ ЗАЯВОК ]</a>
+<h2>
+    <span style="color:#E61919;font-size:0.7em">// {{ req.type.value | upper }}</span><br>
+    {{ req.number }} — {{ req.title }}
     <span class="status-pill status-{{ req.status.value }}">{{ status_ru(req.status.value) or req.status.value }}</span>
 </h2>
 
 <div class="card">
-    <p><b>Тип:</b> {{ req.type.value }}</p>
-    <p><b>Заказчик:</b> {{ req.requester.full_name }}{% if req.requester_id != req.created_by_id %} (создал {{ req.created_by.full_name }}){% endif %} | <b>Подразделение:</b> {{ req.division.name }}</p>
-    <p><b>Исполнитель:</b> {{ req.executor.full_name if req.executor else "не назначен" }}</p>
-    <p><b>Ожидаемый срок:</b> {{ req.expected_date or "—" }}</p>
-    {% if req.description %}<p><b>Описание:</b> {{ req.description }}</p>{% endif %}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 20px;font-size:13px">
+        <p><strong style="color:#E61919">ЗАКАЗЧИК:</strong> {{ req.requester.full_name if req.requester else '—' }}{% if req.requester_id != req.created_by_id %} <span style="color:#888;font-family:'JetBrains Mono',monospace;font-size:11px">(СОЗДАЛ: {{ req.created_by.full_name }})</span>{% endif %}</p>
+        <p><strong style="color:#E61919">ПОДРАЗДЕЛЕНИЕ:</strong> {{ req.division.name }}</p>
+        <p><strong style="color:#E61919">ИСПОЛНИТЕЛЬ:</strong> {{ req.executor.full_name if req.executor else "—" }}</p>
+        <p><strong style="color:#E61919">СРОК:</strong> {{ req.expected_date or "—" }}</p>
+    </div>
+    {% if req.description %}<hr><p>{{ req.description }}</p>{% endif %}
 
     {% if req.payment_details %}
     <hr>
-    <h4>Платёж</h4>
-    <p><b>Цель платежа:</b> {{ req.payment_details.purpose }}</p>
-    <p><b>Назначение платежа:</b> {{ req.payment_details.payment_purpose }}</p>
-    <p><b>Сумма:</b> {{ req.payment_details.amount }} {{ req.payment_details.currency.code }}</p>
+    <h4>// ПЛАТЁЖ</h4>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 20px;font-size:13px">
+        <p><strong>ЦЕЛЬ:</strong> {{ req.payment_details.purpose }}</p>
+        <p><strong>НАЗНАЧЕНИЕ:</strong> {{ req.payment_details.payment_purpose }}</p>
+        <p><strong>СУММА:</strong> {{ req.payment_details.amount }} {{ req.payment_details.currency.code }}</p>
+        <p><strong>ПОЛУЧАТЕЛЬ:</strong> {{ req.payment_details.recipient_name }}, {{ req.payment_details.recipient_country }}</p>
+        <p><strong>БАНК:</strong> {{ req.payment_details.recipient_bank }}, {{ req.payment_details.account_number_iban }}, SWIFT {{ req.payment_details.swift_bic }}</p>
+        <p><strong>СПОСОБ ОПЛАТЫ:</strong> {{ req.payment_details.payment_method.value if req.payment_details.payment_method else '—' }}{% if req.payment_details.agent %} <span style="color:#888">(АГЕНТ: {{ req.payment_details.agent.code }})</span>{% endif %}</p>
+    </div>
     {% if req.payment_details.rate_at_request %}
-    <p><b>Курс ЦБ на дату заявки:</b> {{ req.payment_details.rate_at_request }}
-        (≈ {{ req.payment_details.amount_rub_at_request }} ₽)
-        <i>* предварительно, информационно</i></p>
+    <p><strong style="color:#888;font-family:'JetBrains Mono',monospace;font-size:12px">// КУРС ЦБ НА ЗАЯВКУ:</strong> {{ req.payment_details.rate_at_request }} <span style="color:#888;font-size:12px">(≈ {{ req.payment_details.amount_rub_at_request }} ₽) * ПРЕДВАРИТЕЛЬНО</span></p>
     {% endif %}
     {% if req.payment_details.rate_at_execution %}
-    <p><b>Курс ЦБ на дату исполнения:</b> {{ req.payment_details.rate_at_execution }}
-        (= {{ req.payment_details.amount_rub_at_execution }} ₽)</p>
+    <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// КУРС ЦБ НА ИСПОЛНЕНИЕ:</strong> {{ req.payment_details.rate_at_execution }} <span style="font-weight:700">(= {{ req.payment_details.amount_rub_at_execution }} ₽)</span></p>
     {% endif %}
-    <p><b>Получатель:</b> {{ req.payment_details.recipient_name }}, {{ req.payment_details.recipient_country }}</p>
-    <p><b>Банк:</b> {{ req.payment_details.recipient_bank }},
-       {{ req.payment_details.account_number_iban }}, SWIFT {{ req.payment_details.swift_bic }}</p>
-    <p><b>Способ оплаты:</b> {{ req.payment_details.payment_method.value }}
-       {% if req.payment_details.agent %} через агента {{ req.payment_details.agent.code }}{% endif %}</p>
+    {% if req.payment_details.agreed_commission_amount %}
+    <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// СОГЛАСОВАННАЯ КОМИССИЯ:</strong> {{ req.payment_details.agreed_commission_amount }} | <strong>КУРС:</strong> {{ req.payment_details.agreed_rate }}</p>
+    {% endif %}
     {% endif %}
 
     {% if req.purchase_details %}
     <hr>
-    <h4>Закупка</h4>
-    <p><b>Компания-покупатель:</b> {{ req.purchase_details.buyer_company.name }}</p>
-    <p><b>Способ оплаты:</b> {{ req.purchase_details.payment_method.value }}</p>
-    {% if req.purchase_details.markup_notes %}<p><b>Наценка/комментарий:</b> {{ req.purchase_details.markup_notes }}</p>{% endif %}
-    {% if req.purchase_details.delivery_date %}<p><b>Дата поставки:</b> {{ req.purchase_details.delivery_date }}</p>{% endif %}
+    <h4>// ЗАКУПКА</h4>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 20px;font-size:13px">
+        <p><strong>ПОКУПАТЕЛЬ:</strong> {{ req.purchase_details.buyer_company.name }}</p>
+        <p><strong>ОПЛАТА:</strong> {{ req.purchase_details.payment_method.value }}</p>
+        {% if req.purchase_details.markup_notes %}<p><strong>НАЦЕНКА:</strong> {{ req.purchase_details.markup_notes }}</p>{% endif %}
+        {% if req.purchase_details.delivery_date %}<p><strong>ПОСТАВКА:</strong> {{ req.purchase_details.delivery_date }}</p>{% endif %}
+    </div>
     {% endif %}
 
     {% if req.consultation_details %}
     <hr>
-    <h4>Консультация</h4>
-    <p>{{ req.consultation_details.question_description }}</p>
+    <h4>// КОНСУЛЬТАЦИЯ</h4>
+    <p style="font-size:13px">{{ req.consultation_details.question_description }}</p>
     {% endif %}
 </div>
 
 <div class="card">
-    <h3>Действия</h3>
+    <h3>[ ДЕЙСТВИЯ ]</h3>
 
     {% if can_submit %}
-    <a class="btn secondary" href="/requests/{{ req.id }}/edit">Редактировать черновик</a>
+    <a class="btn secondary" href="/requests/{{ req.id }}/edit">[ РЕДАКТИРОВАТЬ ЧЕРНОВИК ]</a>
     <form method="post" action="/requests/{{ req.id }}/submit" style="display:inline">
-        <button type="submit">Подать заявку</button>
+        <button type="submit">[ ПОДАТЬ ЗАЯВКУ ]</button>
     </form>
     {% endif %}
 
     {% if can_assign %}
     <form method="post" action="/requests/{{ req.id }}/assign">
-        <label>Назначить исполнителя</label>
+        <label>НАЗНАЧИТЬ ИСПОЛНИТЕЛЯ</label>
         <select name="executor_id">
             {% for e in executors %}<option value="{{ e.id }}">{{ e.full_name }}</option>{% endfor %}
         </select>
-        <button type="submit">Назначить и взять в работу</button>
+        <button type="submit">[ НАЗНАЧИТЬ И ВЗЯТЬ В РАБОТУ ]</button>
     </form>
     <form method="post" action="/requests/{{ req.id }}/reject">
-        <label>Причина отклонения</label>
+        <label>ПРИЧИНА ОТКЛОНЕНИЯ</label>
         <textarea name="reason" rows="2" required></textarea>
-        <button type="submit" class="danger">Отклонить заявку</button>
+        <button type="submit" class="danger">[ ОТКЛОНИТЬ ЗАЯВКУ ]</button>
     </form>
     {% endif %}
 
     {% if can_acknowledge_rejection %}
-    <p><b>Причина отклонения:</b> {{ rejection_reason }}</p>
+    <p><strong style="color:#E61919">ПРИЧИНА ОТКЛОНЕНИЯ:</strong> {{ rejection_reason }}</p>
     <form method="post" action="/requests/{{ req.id }}/acknowledge_rejection">
-        <button type="submit" class="secondary">Ознакомлен с причиной отклонения</button>
+        <button type="submit" class="secondary">[ ОЗНАКОМЛЕН ]</button>
     </form>
     {% endif %}
 
     {% if can_request_clarification %}
     <form method="post" action="/requests/{{ req.id }}/request_clarification">
-        <label>Вопрос Заказчику</label>
+        <label>ВОПРОС ЗАКАЗЧИКУ</label>
         <textarea name="question" rows="2" required></textarea>
-        <button type="submit">Запросить уточнение</button>
+        <button type="submit">[ ЗАПРОСИТЬ УТОЧНЕНИЕ ]</button>
     </form>
     {% endif %}
 
     {% if can_answer_clarification %}
     <form method="post" action="/requests/{{ req.id }}/answer_clarification">
-        <label>Ответ Исполнителю</label>
+        <label>ОТВЕТ ИСПОЛНИТЕЛЮ</label>
         <textarea name="answer" rows="2" required></textarea>
-        <button type="submit">Ответ предоставлен</button>
+        <button type="submit">[ ОТВЕТИТЬ ]</button>
     </form>
     {% endif %}
 
     {% if can_reassign %}
     <form method="post" action="/requests/{{ req.id }}/assign">
-        <label>Переназначить исполнителя</label>
+        <label>ПЕРЕНАЗНАЧИТЬ ИСПОЛНИТЕЛЯ</label>
         <select name="executor_id">
             {% for e in executors %}<option value="{{ e.id }}"{% if req.executor_id == e.id %} selected{% endif %}>{{ e.full_name }}</option>{% endfor %}
         </select>
-        <button type="submit">Переназначить</button>
+        <button type="submit">[ ПЕРЕНАЗНАЧИТЬ ]</button>
     </form>
     {% endif %}
 
     {% if can_mark_done %}
     <form method="post" action="/requests/{{ req.id }}/mark_done" style="display:inline">
-        <button type="submit">Исполнение завершено</button>
+        <button type="submit">[ ИСПОЛНЕНИЕ ЗАВЕРШЕНО ]</button>
     </form>
     {% endif %}
 
     {% if can_confirm_execution %}
     <form method="post" action="/requests/{{ req.id }}/confirm_execution" style="display:inline"
-          onsubmit="return confirm('Это неотменяемое действие. Подтвердить получение платежа/исполнения?');">
-        <button type="submit">Подтвердить исполнение</button>
+          onsubmit="return confirm('ПОДТВЕРДИТЬ ИСПОЛНЕНИЕ? ЭТО НЕОТМЕНЯЕМО.');">
+        <button type="submit">[ ПОДТВЕРДИТЬ ИСПОЛНЕНИЕ ]</button>
     </form>
     {% endif %}
 
     {% if can_self_assign %}
     <form method="post" action="/requests/{{ req.id }}/self_assign" style="display:inline">
-        <button type="submit">Назначить себя исполнителем</button>
+        <button type="submit">[ НАЗНАЧИТЬ СЕБЯ ]</button>
     </form>
     {% endif %}
 
     {% if can_propose_terms %}
     <form method="post" action="/requests/{{ req.id }}/propose_terms">
-        <label>Способ оплаты</label>
+        <label>СПОСОБ ОПЛАТЫ</label>
         <select name="proposed_payment_method">
-            <option value="bank">Банковский перевод</option>
-            <option value="agent">Через агента</option>
+            <option value="bank">БАНКОВСКИЙ ПЕРЕВОД</option>
+            <option value="agent">ЧЕРЕЗ АГЕНТА</option>
         </select>
-        <label>Агент (если через агента)</label>
+        <label>АГЕНТ</label>
         <select name="proposed_agent_id">
             <option value="">—</option>
             {% for a in agents %}<option value="{{ a.id }}">{{ a.code }}</option>{% endfor %}
         </select>
-        <label>Сумма комиссии</label>
+        <label>СУММА КОМИССИИ</label>
         <input type="text" name="commission_amount" required>
-        <label>Курс</label>
+        <label>КУРС</label>
         <input type="text" name="proposed_rate" value="{{ last_terms_proposal.proposed_rate if last_terms_proposal else '' }}" required>
-        <button type="submit">Предложить условия</button>
+        <button type="submit">[ ПРЕДЛОЖИТЬ УСЛОВИЯ ]</button>
     </form>
     {% endif %}
 
     {% if can_accept_terms and last_terms_proposal %}
     <form method="post" action="/requests/{{ req.id }}/accept_terms" style="display:inline">
-        <button type="submit">Принять условия (комиссия {{ last_terms_proposal.commission_amount }}, курс {{ last_terms_proposal.proposed_rate }})</button>
+        <button type="submit">[ ПРИНЯТЬ: КОМИССИЯ {{ last_terms_proposal.commission_amount }}, КУРС {{ last_terms_proposal.proposed_rate }} ]</button>
     </form>
     <form method="post" action="/requests/{{ req.id }}/reject_terms">
-        <label>Причина отклонения</label>
+        <label>ПРИЧИНА ОТКЛОНЕНИЯ</label>
         <textarea name="reason" rows="2" required></textarea>
-        <button type="submit" class="danger">Отклонить условия</button>
+        <button type="submit" class="danger">[ ОТКЛОНИТЬ УСЛОВИЯ ]</button>
     </form>
     {% endif %}
 
     {% if can_send_to_manager %}
     <form method="post" action="/requests/{{ req.id }}/confirm_documents" style="display:inline">
-        <button type="submit">Комплект подтверждён — отправить руководителю</button>
+        <button type="submit">[ ОТПРАВИТЬ РУКОВОДИТЕЛЮ ]</button>
     </form>
     {% endif %}
 
     {% if can_manager_close %}
     <form method="post" action="/requests/{{ req.id }}/manager_close" style="display:inline">
-        <button type="submit">Закрыть заявку</button>
+        <button type="submit">[ ЗАКРЫТЬ ЗАЯВКУ ]</button>
     </form>
     {% endif %}
 
     {% if can_rework %}
     <form method="post" action="/requests/{{ req.id }}/rework">
-        <label>Причина возврата на доработку</label>
+        <label>ПРИЧИНА ВОЗВРАТА</label>
         <textarea name="reason" rows="2" required></textarea>
-        <button type="submit" class="danger">Отправить на доработку</button>
+        <button type="submit" class="danger">[ ОТПРАВИТЬ НА ДОРАБОТКУ ]</button>
     </form>
     {% endif %}
 
@@ -184,16 +190,16 @@
         and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_self_assign
         and not can_propose_terms and not can_accept_terms and not can_reject_terms and not can_send_to_manager
         and not can_manager_close and not can_rework %}
-    <p><i>Доступных действий нет.</i></p>
+    <p><i>НЕТ ДОСТУПНЫХ ДЕЙСТВИЙ.</i></p>
     {% endif %}
 </div>
 
 {% if attachments %}
 <div class="card">
-    <h3>Приложенные файлы</h3>
+    <h3>[ ПРИЛОЖЕННЫЕ ФАЙЛЫ ]</h3>
     <ul>
         {% for doc in attachments %}
-        <li>{{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})</li>
+        <li style="font-size:13px"><strong>{{ doc.file_name }}</strong> <span style="color:#888;font-family:'JetBrains Mono',monospace;font-size:11px">// {{ doc.uploaded_by.full_name }}</span></li>
         {% endfor %}
     </ul>
 </div>
@@ -201,43 +207,42 @@
 
 {% if can_upload_document or can_override_requirements %}
 <div class="card">
-    <h3>Документы</h3>
+    <h3>[ ДОКУМЕНТЫ ]</h3>
     {% if missing_documents %}
-    <p><b>Не хватает обязательных документов:</b>
-        {% for d in missing_documents %}{{ d.code }} ({{ d.name }}){{ ", " if not loop.last }}{% endfor %}
+    <p><strong style="color:#E61919">НЕ ХВАТАЕТ:</strong>
+        {% for d in missing_documents %}{{ d.code }} ({{ d.name }}){% if not loop.last %}, {% endif %}{% endfor %}
     </p>
     {% endif %}
-    <ul>
-        {% for doc in req.documents if doc.document_type_code is not none %}
-        <li>
-            {{ doc.document_type_code }} — {{ doc.file_name }} (загрузил {{ doc.uploaded_by.full_name }})
-            {% set can_del = doc.uploaded_by_id == current_user.id and (req.executor_id == current_user.id or acting_ruk) %}
-            {% if can_del %}
-            <form method="post" action="/requests/{{ req.id }}/documents/{{ doc.id }}/delete" style="display:inline">
-                <button type="submit" class="danger" style="padding:2px 8px;font-size:12px;margin:0">удалить</button>
-            </form>
-            {% endif %}
-        </li>
-        {% else %}
-        <li>Документов пока нет.</li>
-        {% endfor %}
-    </ul>
+    {% for doc in req.documents if doc.document_type_code is not none %}
+    <div style="font-size:13px;padding:4px 0;border-bottom:1px solid #ccc">
+        <strong>{{ doc.document_type_code }}</strong> — {{ doc.file_name }}
+        <span style="color:#888;font-family:'JetBrains Mono',monospace;font-size:11px">// {{ doc.uploaded_by.full_name }}</span>
+        {% set can_del = doc.uploaded_by_id == current_user.id and (req.executor_id == current_user.id or acting_ruk) %}
+        {% if can_del %}
+        <form method="post" action="/requests/{{ req.id }}/documents/{{ doc.id }}/delete" style="display:inline">
+            <button type="submit" class="danger" style="padding:2px 8px;font-size:11px;margin:0">X</button>
+        </form>
+        {% endif %}
+    </div>
+    {% else %}
+    <p style="font-size:13px;color:#888">ДОКУМЕНТОВ НЕТ.</p>
+    {% endfor %}
     {% if can_upload_document %}
-    <form method="post" action="/requests/{{ req.id }}/documents" enctype="multipart/form-data">
-        <label>Тип документа</label>
+    <form method="post" action="/requests/{{ req.id }}/documents" enctype="multipart/form-data" style="margin-top:12px">
+        <label>ТИП ДОКУМЕНТА</label>
         <select name="document_type_code">
             {% for dt in doc_type_options %}<option value="{{ dt.code }}">{{ dt.code }} — {{ dt.name }}</option>{% endfor %}
         </select>
-        <label>Файл</label>
+        <label>ФАЙЛ</label>
         <input type="file" name="file" required>
-        <button type="submit">Загрузить</button>
+        <button type="submit">[ ЗАГРУЗИТЬ ]</button>
     </form>
     {% endif %}
     {% if can_override_requirements %}
     <details style="margin-top:12px">
-        <summary style="cursor:pointer;font-weight:600;font-size:13px">Требования к документам (изменить)</summary>
+        <summary style="cursor:pointer;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace;text-transform:uppercase">[ ТРЕБОВАНИЯ К ДОКУМЕНТАМ ]</summary>
         <table style="margin-top:8px">
-            <thead><tr><th>Код</th><th>Название</th><th>Обязательность</th><th></th></tr></thead>
+            <thead><tr><th>КОД</th><th>НАЗВАНИЕ</th><th>ОБЯЗ.</th><th></th></tr></thead>
             <tbody>
                 {% for dt in doc_type_options %}
                 <tr>
@@ -246,14 +251,14 @@
                     <td>
                         {% set overridden = doc_type_overrides.get(dt.code) %}
                         {% if overridden is not none %}
-                            {{ "Да" if overridden else "Нет" }}
+                            {{ "ДА" if overridden else "НЕТ" }}
                         {% else %}
-                            {{ "Да" if dt.is_required_default else "Нет" }} <i>(по умолч.)</i>
+                            {{ "ДА" if dt.is_required_default else "НЕТ" }} <span style="color:#888">(ПО УМОЛЧ.)</span>
                         {% endif %}
                     </td>
                     <td>
                         <form method="post" action="/requests/{{ req.id }}/document_requirements/{{ dt.code }}/toggle" style="display:inline">
-                            <button type="submit" class="secondary" style="font-size:12px;padding:4px 10px;margin:0">Переключить</button>
+                            <button type="submit" class="secondary" style="font-size:11px;padding:4px 10px;margin:0">[ ПЕРЕКЛЮЧИТЬ ]</button>
                         </form>
                     </td>
                 </tr>
@@ -266,36 +271,36 @@
 {% endif %}
 
 <div class="card">
-    <h3>Комментарии</h3>
+    <h3>[ КОММЕНТАРИИ ]</h3>
     {% for c in req.comments %}
     <div class="comment">
-        <div class="meta">{{ c.author.full_name }} — {{ c.created_at.strftime("%d.%m.%Y %H:%M") }}</div>
+        <div class="meta">&gt; {{ c.author.full_name }} // {{ c.created_at.strftime("%d.%m.%Y %H:%M") }}</div>
         {{ c.content }}
         {% if c.documents %}
-        <div style="margin-top:6px;font-size:13px">
+        <div style="margin-top:6px;font-size:12px;font-family:'JetBrains Mono',monospace">
             {% for d in c.documents %}
-            <a href="/uploads/{{ d.request_id }}/{{ d.storage_path.split('/')[-1] }}">{{ d.file_name }}</a>{% if not loop.last %}, {% endif %}
+            <a href="/uploads/{{ d.request_id }}/{{ d.storage_path.split('/')[-1] }}">[ {{ d.file_name }} ]</a>{% if not loop.last %}, {% endif %}
             {% endfor %}
         </div>
         {% endif %}
     </div>
     {% else %}
-    <p><i>Комментариев пока нет.</i></p>
+    <p style="font-size:13px;color:#888">КОММЕНТАРИЕВ НЕТ.</p>
     {% endfor %}
     <form method="post" action="/requests/{{ req.id }}/comments" enctype="multipart/form-data">
-        <textarea name="content" rows="2" placeholder="Написать комментарий..." required></textarea>
+        <textarea name="content" rows="2" placeholder="КОММЕНТАРИЙ..." required></textarea>
         <input type="file" name="file" style="margin:8px 0">
-        <button type="submit">Отправить</button>
+        <button type="submit">[ ОТПРАВИТЬ ]</button>
     </form>
 </div>
 
 <div class="card">
-    <h3>История статусов</h3>
+    <h3>[ ИСТОРИЯ СТАТУСОВ ]</h3>
     {% for h in req.status_history %}
     <div class="history-item">
-        {{ h.changed_at.strftime("%d.%m.%Y %H:%M") }} — {{ h.changed_by.full_name }}:
-        {{ status_ru(h.from_status.value) if h.from_status else "—" }} → {{ status_ru(h.to_status.value) }}
-        {% if h.comment %}<i>({{ h.comment }})</i>{% endif %}
+        {{ h.changed_at.strftime("%d.%m.%Y %H:%M") }} &gt; <strong>{{ h.changed_by.full_name }}</strong>:
+        {% if h.from_status %}{{ status_ru(h.from_status.value) }}{% else %}—{% endif %} &rarr; {{ status_ru(h.to_status.value) }}
+        {% if h.comment %}<span style="color:#888">// {{ h.comment }}</span>{% endif %}
     </div>
     {% endfor %}
 </div>

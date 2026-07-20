@@ -1,26 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Заявки — PayTracker{% endblock %}
 {% block content %}
-<h2>Заявки</h2>
-{% if current_user.role.value != "ispolnitel" %}<a class="btn" href="/requests/new">+ Новая заявка</a>{% endif %}
+<h2>&lt; ЗАЯВКИ / REQUESTS &gt;</h2>
+{% if current_user.role.value != "ispolnitel" %}<a class="btn" href="/requests/new">+ НОВАЯ ЗАЯВКА</a>{% endif %}
 
 <table>
     <thead>
         <tr>
-            <th>№</th><th>Тип</th><th>Название</th><th>Статус</th>
-            <th>Заказчик</th><th>Подразделение</th>
-            <th>Получатель</th><th>Сумма</th><th>Валюта</th>
-            <th>Исполнитель</th><th>Срок</th>
+            <th>№</th><th>ТИП</th><th>НАЗВАНИЕ</th><th>СТАТУС</th>
+            <th>ЗАКАЗЧИК</th><th>ПОДРАЗД.</th>
+            <th>ПОЛУЧАТЕЛЬ</th><th>СУММА</th><th>ВАЛ.</th>
+            <th>ИСПОЛНИТЕЛЬ</th><th>СРОК</th>
         </tr>
     </thead>
     <tbody>
         {% for r in requests %}
         <tr onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
-            <td>{{ r.number }}</td>
-            <td>{{ {"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"}.get(r.type.value, r.type.value) }}</td>
+            <td><strong>{{ r.number }}</strong></td>
+            <td>{{ {"payment": "ПЛАТЁЖ", "purchase": "ЗАКУПКА", "consultation": "КОНСУЛЬТ."}.get(r.type.value, r.type.value) }}</td>
             <td>{{ r.title }}</td>
             <td><span class="status-pill status-{{ r.status.value }}">{{ status_ru(r.status.value) or r.status.value }}</span></td>
-            <td>{{ r.created_by.full_name }}</td>
+            <td>{{ r.requester.full_name if r.requester else r.created_by.full_name }}</td>
             <td>{{ r.division.name }}</td>
             <td>{{ r.payment_details.recipient_name if r.payment_details else "—" }}</td>
             <td>{{ r.payment_details.amount if r.payment_details else "—" }}</td>
@@ -29,7 +29,7 @@
             <td>{{ r.expected_date or "—" }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="11">Заявок пока нет.</td></tr>
+        <tr><td colspan="11">ЗАЯВОК НЕТ.</td></tr>
         {% endfor %}
     </tbody>
 </table>

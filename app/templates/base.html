@@ -7,17 +7,17 @@
 </head>
 <body>
     <header class="topbar">
-        <a href="/requests" class="brand">PayTracker</a>
+        <a href="/requests" class="brand">[ PAYTRACKER ]</a>
         {% if current_user %}
-        <span class="user-info">{{ current_user.full_name }} <span class="badge">{{ current_user.role.value }}</span></span>
-        {% if current_user.role.value == "rukovoditel" %}<a href="/delegations" class="nav-link">Делегирование</a><a href="/audit" class="nav-link">Аудит</a>{% endif %}
-        <a href="/logout" class="logout">Выйти</a>
+        <span class="user-info">&gt; {{ current_user.full_name }} <span class="badge">{{ current_user.role.value }}</span></span>
+        {% if current_user.role.value == "rukovoditel" %}<a href="/delegations" class="nav-link">// ДЕЛЕГИРОВАНИЕ</a><a href="/audit" class="nav-link">// АУДИТ</a>{% endif %}
+        <a href="/logout" class="logout">X ВЫЙТИ</a>
         {% endif %}
     </header>
 
     <main class="container">
         {% for f in flash_messages %}
-        <div class="flash flash-{{ f.level }}">{{ f.message }}</div>
+        <div class="flash flash-{{ f.level }}">&raquo; {{ f.message }}</div>
         {% endfor %}
         {% block content %}{% endblock %}
     </main>
