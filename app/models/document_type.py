@@ -16,3 +16,5 @@ class DocumentType(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[DocumentCategory] = mapped_column(DOCUMENT_CATEGORY_ENUM, nullable=False)
     is_required_default: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # BR-123: внутренняя служба-получатель документа (бухгалтерия, валютный контроль и т.п.)
+    recipient_service: Mapped[str | None] = mapped_column(String(128), nullable=True)

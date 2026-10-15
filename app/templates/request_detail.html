@@ -27,7 +27,7 @@
         <p><strong>СУММА:</strong> {{ req.payment_details.amount }} {{ req.payment_details.currency.code }}</p>
         <p><strong>ПОЛУЧАТЕЛЬ:</strong> {{ req.payment_details.recipient_name }}, {{ req.payment_details.recipient_country }}</p>
         <p><strong>БАНК:</strong> {{ req.payment_details.recipient_bank }}, {{ req.payment_details.account_number_iban }}, SWIFT {{ req.payment_details.swift_bic }}</p>
-        <p><strong>СПОСОБ ОПЛАТЫ:</strong> {{ req.payment_details.payment_method.value if req.payment_details.payment_method else '—' }}{% if req.payment_details.agent %} <span style="color:#888">(АГЕНТ: {{ req.payment_details.agent.code }})</span>{% endif %}</p>
+        <p><strong>СПОСОБ ОПЛАТЫ:</strong> {{ req.payment_details.payment_method.value if req.payment_details.payment_method else '—' }}{% if req.payment_details.agent %} <span style="color:#888">(АГЕНТ: {{ req.payment_details.agent.code }}{% if req.payment_details.subagent %} → СУБАГЕНТ: {{ req.payment_details.subagent.code }}{% endif %})</span>{% endif %}</p>
     </div>
     {% if req.payment_details.rate_at_request %}
     <p><strong style="color:#888;font-family:'JetBrains Mono',monospace;font-size:12px">// КУРС ЦБ НА ЗАЯВКУ:</strong> {{ req.payment_details.rate_at_request }} <span style="color:#888;font-size:12px">(≈ {{ req.payment_details.amount_rub_at_request }} ₽) * ПРЕДВАРИТЕЛЬНО</span></p>
@@ -36,7 +36,7 @@
     <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// КУРС ЦБ НА ИСПОЛНЕНИЕ:</strong> {{ req.payment_details.rate_at_execution }} <span style="font-weight:700">(= {{ req.payment_details.amount_rub_at_execution }} ₽)</span></p>
     {% endif %}
     {% if req.payment_details.agreed_commission_amount %}
-    <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// СОГЛАСОВАННАЯ КОМИССИЯ:</strong> {{ req.payment_details.agreed_commission_amount }} | <strong>КУРС:</strong> {{ req.payment_details.agreed_rate }}</p>
+    <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// СОГЛАСОВАННАЯ КОМИССИЯ:</strong> {{ req.payment_details.agreed_commission_amount }} | <strong>КУРС:</strong> {{ req.payment_details.agreed_rate }}{% if req.payment_details.agreed_execution_deadline %} | <strong>СРОК:</strong> {{ req.payment_details.agreed_execution_deadline }}{% endif %}</p>
     {% endif %}
     {% endif %}
 
@@ -147,10 +147,17 @@
             <option value="">—</option>
             {% for a in agents %}<option value="{{ a.id }}">{{ a.code }}</option>{% endfor %}
         </select>
+        <label>СУБАГЕНТ (ОПЦИОНАЛЬНО)</label>
+        <select name="proposed_subagent_id">
+            <option value="">—</option>
+            {% for a in agents %}<option value="{{ a.id }}">{{ a.code }}</option>{% endfor %}
+        </select>
         <label>СУММА КОМИССИИ</label>
-        <input type="text" name="commission_amount" required>
+        <input type="text" name="commission_amount" value="{{ last_terms_proposal.commission_amount if last_terms_proposal else '' }}" required>
         <label>КУРС</label>
         <input type="text" name="proposed_rate" value="{{ last_terms_proposal.proposed_rate if last_terms_proposal else '' }}" required>
+        <label>СРОК ИСПОЛНЕНИЯ (ОБЯЗАТЕЛЬНО)</label>
+        <input type="date" name="proposed_execution_deadline" value="{{ last_terms_proposal.proposed_execution_deadline.isoformat() if last_terms_proposal and last_terms_proposal.proposed_execution_deadline else '' }}" required>
         <button type="submit">[ ПРЕДЛОЖИТЬ УСЛОВИЯ ]</button>
     </form>
     {% endif %}
@@ -242,7 +249,7 @@
     <details style="margin-top:12px">
         <summary style="cursor:pointer;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace;text-transform:uppercase">[ ТРЕБОВАНИЯ К ДОКУМЕНТАМ ]</summary>
         <table style="margin-top:8px">
-            <thead><tr><th>КОД</th><th>НАЗВАНИЕ</th><th>ОБЯЗ.</th><th></th></tr></thead>
+        <thead><tr><th>КОД</th><th>НАЗВАНИЕ</th><th>ОБЯЗ.</th><th>СЛУЖБА-ПОЛУЧАТЕЛЬ</th><th></th></tr></thead>
             <tbody>
                 {% for dt in doc_type_options %}
                 <tr>
@@ -256,6 +263,7 @@
                             {{ "ДА" if dt.is_required_default else "НЕТ" }} <span style="color:#888">(ПО УМОЛЧ.)</span>
                         {% endif %}
                     </td>
+                    <td style="color:#888;font-size:12px">{{ dt.recipient_service or "—" }}</td>
                     <td>
                         <form method="post" action="/requests/{{ req.id }}/document_requirements/{{ dt.code }}/toggle" style="display:inline">
                             <button type="submit" class="secondary" style="font-size:11px;padding:4px 10px;margin:0">[ ПЕРЕКЛЮЧИТЬ ]</button>

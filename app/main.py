@@ -894,8 +894,10 @@ def action_propose_terms(
     db: Session = Depends(get_db),
     proposed_payment_method: str = Form(...),
     proposed_agent_id: str = Form(""),
+    proposed_subagent_id: str = Form(""),
     commission_amount: str = Form(...),
     proposed_rate: str = Form(...),
+    proposed_execution_deadline: str = Form(""),
 ):
     user = require_login(request, db)
     if not user:
@@ -906,13 +908,36 @@ def action_propose_terms(
     if not req.payment_details:
         flash(request, "Согласование условий только для платежей.", "error")
         return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
+    agent_id = int(proposed_agent_id) if proposed_agent_id else None
+    subagent_id = int(proposed_subagent_id) if proposed_subagent_id else None
+
+    # BR-120: не более двух уровней, Агент и Субагент не могут совпадать.
+    if proposed_payment_method == "agent":
+        if agent_id is None:
+            flash(request, "Укажите Агента для способа 'через агента'.", "error")
+            return RedirectResponse(f"/requests/{request_id}", status_code=303)
+        if subagent_id is not None and subagent_id == agent_id:
+            flash(request, "Агент и Субагент не могут совпадать (BR-120).", "error")
+            return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    else:  # bank
+        agent_id = None
+        subagent_id = None
+
+    deadline = date.fromisoformat(proposed_execution_deadline) if proposed_execution_deadline else None
+    if deadline is None:
+        flash(request, "Укажите срок исполнения (BR-121).", "error")
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+
     try:
         proposal = PaymentTermsProposal(
             payment_request_id=req.payment_details.request_id,
             proposed_payment_method=PaymentMethod(proposed_payment_method),
-            proposed_agent_id=int(proposed_agent_id) if proposed_agent_id else None,
+            proposed_agent_id=agent_id,
+            proposed_subagent_id=subagent_id,
             commission_amount=commission_amount,
             proposed_rate=proposed_rate,
+            proposed_execution_deadline=deadline,
             proposed_by_id=user.id,
         )
         db.add(proposal)
@@ -941,8 +966,10 @@ def action_accept_terms(request: Request, request_id: int, db: Session = Depends
             last.decided_by_id = user.id
             req.payment_details.payment_method = last.proposed_payment_method
             req.payment_details.agent_id = last.proposed_agent_id
+            req.payment_details.subagent_id = last.proposed_subagent_id
             req.payment_details.agreed_commission_amount = last.commission_amount
             req.payment_details.agreed_rate = last.proposed_rate
+            req.payment_details.agreed_execution_deadline = last.proposed_execution_deadline
         status_machine.accept_terms(db, req, user)
         db.commit()
         flash(request, "Условия приняты.")

@@ -98,6 +98,7 @@ class PaymentRequest(Base):
 
     payment_method: Mapped[PaymentMethod | None] = mapped_column(PAYMENT_METHOD_ENUM, nullable=True)
     agent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    subagent_id: Mapped[int | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
 
     rate_at_request: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     amount_rub_at_request: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
@@ -106,10 +107,12 @@ class PaymentRequest(Base):
 
     agreed_commission_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     agreed_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
+    agreed_execution_deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     request: Mapped["Request"] = relationship(back_populates="payment_details")
     currency: Mapped["Currency"] = relationship()
-    agent: Mapped["Agent | None"] = relationship()
+    agent: Mapped["Agent | None"] = relationship(foreign_keys=[agent_id])
+    subagent: Mapped["Agent | None"] = relationship(foreign_keys=[subagent_id])
     terms_proposals: Mapped[list["PaymentTermsProposal"]] = relationship(
         back_populates="payment_request", cascade="all, delete-orphan"
     )
