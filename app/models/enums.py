@@ -70,6 +70,12 @@ class AuditActionType(str, enum.Enum):
     CLOSED_BY_MANAGER = "closed_by_manager"
     CREATED_FOR_REQUESTER = "created_for_requester"
     COMMENT_ATTACHMENT_UPLOADED = "comment_attachment_uploaded"
+    REPORT_GENERATED = "report_generated"
+
+
+class ExportFormat(str, enum.Enum):
+    CSV = "csv"
+    XLSX = "xlsx"
 
 
 USER_ROLE_ENUM = SAEnum(UserRole, name="user_role")
@@ -79,3 +85,4 @@ PAYMENT_METHOD_ENUM = SAEnum(PaymentMethod, name="payment_method")
 PAYMENT_TERMS_DECISION_ENUM = SAEnum(PaymentTermsDecision, name="payment_terms_decision")
 DOCUMENT_CATEGORY_ENUM = SAEnum(DocumentCategory, name="document_category")
 AUDIT_ACTION_TYPE_ENUM = SAEnum(AuditActionType, name="audit_action_type")
+EXPORT_FORMAT_ENUM = SAEnum(ExportFormat, name="export_format")

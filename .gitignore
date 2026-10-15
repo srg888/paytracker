@@ -8,3 +8,5 @@ uploads/*
 .env
 .DS_Store
 .aider*
+.opencode/
+PayTracker_Vault/

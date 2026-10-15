@@ -58,3 +58,6 @@ def downgrade() -> None:
     op.drop_column('payment_requests', 'agreed_rate')
     op.drop_column('payment_requests', 'agreed_commission_amount')
     op.drop_table('payment_terms_proposals')
+    # После удаления таблицы — снять и сам ENUM-тип, иначе повторный upgrade
+    # упадёт с "type payment_terms_decision already exists" (CI ловит это).
+    op.execute('DROP TYPE IF EXISTS payment_terms_decision')

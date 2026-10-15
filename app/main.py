@@ -4,8 +4,9 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -30,6 +31,26 @@ from app.services import status_machine
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
+from app.services.reports import generate_report, generate_report_list
+
+
+class ReportRequestPayload(BaseModel):
+    """Тело POST /api/reports/requests."""
+
+    request_id: int
+    format: str = "csv"
+    user_id: int | None = None  # игнорируется: авторизация из сессии
+
+
+class ReportListPayload(BaseModel):
+    """Тело POST /api/reports/list — экспорт всего видимого списка заявок."""
+
+    format: str = "csv"
+    # Опциональные фильтры (как в списке на странице)
+    request_type: str | None = None
+    status: str | None = None
+    division_id: int | None = None
+    user_id: int | None = None  # игнорируется: авторизация из сессии
 
 def _rub_amount(amount: str | Decimal, rate: Decimal | None) -> Decimal | None:
     """Decimal-умножение с округлением до копеек — float здесь недопустим
@@ -300,6 +321,83 @@ def requests_list(request: Request, db: Session = Depends(get_db)):
         query = query.filter(RequestModel.requester_id == user.id)
     requests_ = query.order_by(RequestModel.id.desc()).all()
     return render(request, "requests_list.html", db, requests=requests_)
+
+
+# --- Экспорт отчётов (JSON API для кнопок CSV/XLSX в списке заявок) ---
+
+
+@app.post("/api/reports/requests")
+def api_report_request(payload: ReportRequestPayload, request: Request, db: Session = Depends(get_db)):
+    """Сгенерировать отчёт (CSV/XLSX) по одной заявке и вернуть URL для скачивания.
+
+    Фронтенд (requests_list.html) шлёт сюда POST с JSON {request_id, format, user_id}.
+    user_id в теле игнорируется — авторизация берётся из сессии.
+    """
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"error": "Не авторизован"}, status_code=401)
+
+    export_format = (payload.format or "csv").lower()
+    if export_format not in {"csv", "xlsx"}:
+        return JSONResponse({"error": "Недопустимый формат. Доступно: csv, xlsx"}, status_code=400)
+
+    try:
+        report = generate_report(db, payload.request_id, export_format, user.id)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    except Exception as exc:  # непредвиденная ошибка генерации
+        return JSONResponse({"error": f"Не удалось сгенерировать отчёт: {exc}"}, status_code=500)
+
+    filename = Path(report.file_path).name
+    return JSONResponse({"download_url": f"/uploads/reports/{filename}"})
+
+
+@app.post("/api/reports/list")
+def api_report_list(payload: ReportListPayload, request: Request, db: Session = Depends(get_db)):
+    """Сгенерировать отчёт по всему списку заявок (как на странице /requests).
+
+    Учитывает видимость: ZAKAZCHIK видит только свои заявки.
+    Принимает опциональные фильтры для сужения выгрузки.
+    """
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"error": "Не авторизован"}, status_code=401)
+
+    export_format = (payload.format or "csv").lower()
+    if export_format not in {"csv", "xlsx"}:
+        return JSONResponse({"error": "Недопустимый формат. Доступно: csv, xlsx"}, status_code=400)
+
+    # Правила видимости как в requests_list()
+    filters: dict = {}
+    if user.role == UserRole.ZAKAZCHIK:
+        filters["requester_id"] = [user.id]
+    if payload.request_type:
+        filters["type"] = [payload.request_type]
+    if payload.status:
+        filters["status"] = [payload.status]
+    if payload.division_id:
+        filters["division_id"] = [payload.division_id]
+
+    # По умолчанию — все осмысленные колонки (включая тип-специфичные)
+    selected_fields = [
+        "ID", "Номер", "Заголовок", "Описание", "Тип", "Статус", "Ожидаемая дата",
+        "Создал", "Инициатор", "Исполнитель", "Подразделение", "Сумма", "Валюта",
+        "Отправлено", "Закрыто",
+        "Назначение платёжа", "Получатель", "Банк получателя", "IBAN", "SWIFT",
+        "Метод оплаты", "Агент",
+        "Метод оплаты (закупка)", "Покупатель", "Наценка", "Дата поставки",
+        "Консультация",
+    ]
+
+    try:
+        report = generate_report_list(db, selected_fields, filters, export_format, user.id)
+    except HTTPException as exc:
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+    except Exception as exc:
+        return JSONResponse({"error": f"Не удалось сгенерировать отчёт: {exc}"}, status_code=500)
+
+    filename = Path(report.file_path).name
+    return JSONResponse({"download_url": f"/uploads/reports/{filename}"})
 
 
 def _reference_data(db: Session) -> dict:

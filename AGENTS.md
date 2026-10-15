@@ -1,5 +1,16 @@
 # PayTracker — Agent Instructions
 
+## Deployment / environment
+
+This project IS the live production instance. It runs directly on this machine (no remote server, no SSH needed):
+
+- Containers: `paytracker-web-1` (port 8000 internally) and `paytracker-db-1` (PostgreSQL)
+- Public URL: **https://v.uk.remote-fitness.online:8449/login**
+- This machine is reachable publicly as `v.uk.remote-fitness.online` (hostname `694546.myvds.top`, IP `31.148.99.87`)
+- The public URL is proxied through Xray + Nginx on this same machine — the app itself always runs on `localhost:8000`
+- To restart after changes: `docker compose up --build -d` from this directory
+- Do NOT attempt SSH to any other server — there is no other server involved in this project
+
 ## Run
 
 ```bash
