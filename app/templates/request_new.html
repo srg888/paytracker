@@ -20,6 +20,17 @@
       action="{{ ('/requests/' ~ req.id ~ '/edit') if editing else '/requests/new/' ~ req_type }}"
       enctype="multipart/form-data">
 
+    {% if can_pick_requester and not editing %}
+    <label>ЗАКАЗЧИК (ЕСЛИ ЗАЯВКА НЕ ОТ СВОЕГО ИМЕНИ)</label>
+    <select name="requester_id">
+        <option value="">— Свой (текущий пользователь) —</option>
+        {% for z in zakazchiki %}
+        <option value="{{ z.id }}">{{ z.full_name }}</option>
+        {% endfor %}
+    </select>
+    <p style="font-size:11px;color:#888;margin-top:2px">BR-015: заявка от имени Заказчика. Права подтверждения/ответа на уточнение — у выбранного Заказчика.</p>
+    {% endif %}
+
     <label>Название заявки</label>
     <input type="text" name="title" required value="{{ req.title if editing else '' }}">
 

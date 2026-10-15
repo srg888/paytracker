@@ -406,6 +406,9 @@ def _reference_data(db: Session) -> dict:
         currencies=db.query(Currency).all(),
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
         buyer_companies=db.query(BuyerCompany).filter(BuyerCompany.is_active.is_(True)).all(),
+        zakazchiki=db.query(User).filter(
+            User.role == UserRole.ZAKAZCHIK, User.is_active.is_(True)
+        ).order_by(User.full_name).all(),
     )
 
 
@@ -433,7 +436,12 @@ def new_request_form(request: Request, req_type: str, db: Session = Depends(get_
         return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
-    return render(request, "request_new.html", db, editing=False, req=None, req_type=req_type, **_reference_data(db))
+    ctx = _reference_data(db)
+    ctx["can_pick_requester"] = (
+        user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
+    )
+    ctx["current_user"] = user
+    return render(request, "request_new.html", db, editing=False, req=None, req_type=req_type, **ctx)
 
 
 def _next_request_number(req_id: int) -> str:
@@ -472,6 +480,8 @@ async def create_request(
     delivery_date: str = Form(""),
     # consultation fields
     question_description: str = Form(""),
+    # "от имени Заказчика" (BR-015): кто является заказчиком, если не текущий пользователь
+    requester_id: str = Form(""),
     files: list[UploadFile] = File(default=[]),
 ):
     user = require_login(request, db)
@@ -485,6 +495,21 @@ async def create_request(
 
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
+    # BR-015: Руководитель/делегат может создать заявку от имени Заказчика.
+    # requester_id из формы берём только если это разрешено и указан реальный пользователь.
+    target_requester_id = user.id
+    can_pick_requester = user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
+    if can_pick_requester and requester_id:
+        try:
+            target_requester_id = int(requester_id)
+        except ValueError:
+            target_requester_id = user.id
+        # валидация: указанный пользователь должен быть активным Заказчиком
+        requester_user = db.get(User, target_requester_id)
+        if not requester_user or requester_user.role != UserRole.ZAKAZCHIK or not requester_user.is_active:
+            flash(request, "Указанный Заказчик не найден или неактивен.", "error")
+            return RedirectResponse(f"/requests/new/{req_type}", status_code=303)
+
     req = RequestModel(
         number="",
         type=RequestType(req_type),
@@ -494,11 +519,24 @@ async def create_request(
         expected_date=exp_date,
         division_id=division_id,
         created_by_id=user.id,
-        requester_id=user.id,
+        requester_id=target_requester_id,
     )
     db.add(req)
     db.flush()
     req.number = _next_request_number(req.id)
+
+    if target_requester_id != user.id:
+        db.add(
+            AuditLog(
+                entity_type="request",
+                entity_id=req.id,
+                user_id=user.id,
+                action_type=AuditActionType.CREATED_FOR_REQUESTER,
+                field_name="requester_id",
+                old_value=str(user.id),
+                new_value=str(target_requester_id),
+            )
+        )
 
     if req_type == RequestType.PAYMENT.value:
         if not currency_id:
