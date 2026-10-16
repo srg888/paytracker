@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Суммы платежей — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/reports">&larr; К отчётам</a>
+<h2>// ОТЧЁТНОСТЬ: СУММЫ ПЛАТЕЖЕЙ ЗА ПЕРИОД</h2>
+
+<form class="card" method="get" action="/reports/sums" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+        <label>С (дата исполнения)</label>
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </div>
+    <div>
+        <label>По</label>
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </div>
+    <div>
+        <label>Валюта</label>
+        <select name="currency_id">
+            <option value="">— все —</option>
+            {% for c in currencies %}
+            <option value="{{ c.id }}" {{ "selected" if currency_id == c.id|string else "" }}>{{ c.code }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <button type="submit" class="btn" style="background:#222;color:#fff">[ ПОКАЗАТЬ ]</button>
+</form>
+
+<div class="card">
+    <p style="font-family:'JetBrains Mono',monospace;font-size:13px">
+        // ПЕРИОД: {{ date_from or '—' }} … {{ date_to or '—' }}
+    </p>
+    {% if data.grand_total_rub is not none %}
+    <p><strong>ИТОГО (в руб. по факт. курсу исполнения): {{ "%.2f"|format(data.grand_total_rub) }} ₽</strong></p>
+    {% else %}
+    <p><strong>ИТОГО: —</strong></p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h3>[ По валютам ]</h3>
+    {% if data.by_currency %}
+    <table>
+        <thead><tr><th>#</th><th>Валюта</th><th>Сумма</th></tr></thead>
+        <tbody>
+            {% for code, total in data.by_currency %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ code }}</td>
+                <td><strong>{{ "%.2f"|format(total) }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p style="color:#888;font-size:13px">Нет данных.</p>{% endif %}
+</div>
+
+<div class="card">
+    <h3>[ По подразделениям (юрлицам заказчика) ]</h3>
+    {% if data.by_division %}
+    <table>
+        <thead><tr><th>#</th><th>Подразделение</th><th>Сумма, ₽</th></tr></thead>
+        <tbody>
+            {% for name, total in data.by_division %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ name }}</td>
+                <td><strong>{{ "%.2f"|format(total) }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p style="color:#888;font-size:13px">Нет данных.</p>{% endif %}
+</div>
+
+<div class="card">
+    <h3>[ По агентам ]</h3>
+    {% if data.by_agent %}
+    <table>
+        <thead><tr><th>#</th><th>Агент</th><th>Сумма, ₽</th></tr></thead>
+        <tbody>
+            {% for code, total in data.by_agent %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ code }}</td>
+                <td><strong>{{ "%.2f"|format(total) }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p style="color:#888;font-size:13px">Нет данных.</p>{% endif %}
+</div>
+
+{% endblock %}

@@ -34,7 +34,7 @@ from app.services import status_machine
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
-from app.services.reports import generate_report, generate_report_list, request_counts_report
+from app.services.reports import generate_report, generate_report_list, request_counts_report, payment_sums_report
 
 
 class ReportRequestPayload(BaseModel):
@@ -1566,4 +1566,40 @@ def reports_view(
         statuses=list(_STATUS_RU.keys()),
         status_ru=_STATUS_RU.get,
         type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
+    )
+
+
+@app.get("/reports/sums")
+def reports_sums_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    date_from: str = "",
+    date_to: str = "",
+    currency_id: str = "",
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    frm = date.fromisoformat(date_from) if date_from else None
+    to = date.fromisoformat(date_to) if date_to else None
+    if frm and to and frm > to:
+        flash(request, "Дата начала не может быть позже даты окончания.", "error")
+        frm = to = None
+
+    data = payment_sums_report(
+        db,
+        date_from=frm,
+        date_to=to,
+        currency_id=int(currency_id) if currency_id else None,
+    )
+    return render(
+        request,
+        "reports/report_sums.html",
+        db,
+        data=data,
+        date_from=date_from,
+        date_to=date_to,
+        currency_id=currency_id,
+        currencies=db.query(Currency).order_by(Currency.code).all(),
     )

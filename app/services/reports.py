@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import uuid
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, Any
 
@@ -13,7 +14,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from app.models.report import Report
-from app.models.request import Request
+from app.models.request import Request, PaymentRequest
 from app.models.enums import RequestType
 
 REPORT_DIR = Path("/app/uploads/reports")
@@ -461,4 +462,75 @@ def request_counts_report(
         "period": (date_from, date_to),
         "sections": sections,
         "total": len(requests),
+    }
+
+
+# --- Отчёт: суммы платежей за период (BR-091) ---
+
+
+def payment_sums_report(
+    db: Session,
+    date_from: date | None,
+    date_to: date | None,
+    currency_id: int | None = None,
+) -> dict:
+    """Суммы фактически исполненных платежей за период в разрезах:
+    по валютам, по подразделениям (юрлицам заказчика), по агентам.
+    Используются ФАКТИЧЕСКИЕ суммы из PaymentExecution (BR-091), а не заявленные.
+
+    Возвращает:
+    {
+      "period": (date_from, date_to),
+      "by_currency": [(code, total), ...],
+      "by_division": [(name, total_rub), ...],
+      "by_agent": [(agent_code, total_rub), ...],
+      "grand_total_rub": Decimal | None,
+    }
+    """
+    from app.models.payment_execution import PaymentExecution
+
+    q = (
+        db.query(PaymentExecution)
+        .join(PaymentRequest, PaymentRequest.request_id == PaymentExecution.payment_request_id)
+        .join(Request, Request.id == PaymentRequest.request_id)
+    )
+    if date_from:
+        q = q.filter(PaymentExecution.executed_at >= date_from)
+    if date_to:
+        q = q.filter(PaymentExecution.executed_at <= date_to)
+    if currency_id:
+        q = q.filter(PaymentExecution.currency_id == currency_id)
+    executions = q.all()
+
+    by_currency: dict[str, Decimal] = {}
+    by_division: dict[str, Decimal] = {}
+    by_agent: dict[str, Decimal] = {}
+    grand: Decimal | None = Decimal("0")
+
+    for ex in executions:
+        cur_code = ex.currency.code if ex.currency else "—"
+        by_currency[cur_code] = by_currency.get(cur_code, Decimal("0")) + ex.amount
+
+        # пересчёт в рубли по фактическому курсу исполнения (amount_rub уже сохранён)
+        rub = ex.amount_rub
+        if rub is None:
+            rub = Decimal("0")
+        grand = (grand or Decimal("0")) + rub
+
+        div_name = ex.payment_request.request.division.name if ex.payment_request and ex.payment_request.request else "—"
+        by_division[div_name] = by_division.get(div_name, Decimal("0")) + rub
+
+        agent = ex.payment_request.agent if ex.payment_request else None
+        if agent:
+            by_agent[agent.code] = by_agent.get(agent.code, Decimal("0")) + rub
+
+    def _sort(d: dict) -> list[tuple]:
+        return sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    return {
+        "period": (date_from, date_to),
+        "by_currency": _sort(by_currency),
+        "by_division": _sort(by_division),
+        "by_agent": _sort(by_agent),
+        "grand_total_rub": grand,
     }
