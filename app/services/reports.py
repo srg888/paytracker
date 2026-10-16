@@ -686,3 +686,94 @@ def clarification_report(
         "percent": percent,
         "by_requester": sorted(by_requester.items(), key=lambda kv: (-kv[1], kv[0])),
     }
+
+
+# --- Полная история одной заявки (выгрузка из аудита) ---
+
+
+def request_history_report(db: Session, request_id: int) -> dict | None:
+    """Полная история одной заявки: объединяет переходы статусов, записи аудита
+    и комментарии в единый хронологический поток.
+
+    Возвращает {"request": Request, "events": [ {...}, ... ]} или None, если заявки нет.
+    Каждое событие: {"at": datetime, "type": str, "title": str, "detail": str, "user": str}.
+    """
+    from app.models.audit_log import AuditLog
+    from app.models.status_history import RequestStatusHistory
+    from app.models.comment import RequestComment
+
+    req = db.get(Request, request_id)
+    if not req:
+        return None
+
+    events = []
+
+    # Переходы статусов
+    for h in req.status_history:
+        events.append({
+            "at": h.changed_at,
+            "type": "status",
+            "title": f"Статус: {h.from_status.value if h.from_status else '—'} → {h.to_status.value}",
+            "detail": h.comment or "",
+            "user": h.changed_by.full_name if h.changed_by else "—",
+        })
+
+    # Аудит (кроме статусных переходов, чтобы не дублировать)
+    audit_entries = (
+        db.query(AuditLog)
+        .filter(AuditLog.entity_type == "request", AuditLog.entity_id == request_id)
+        .order_by(AuditLog.id)
+        .all()
+    )
+    for e in audit_entries:
+        detail_parts = []
+        if e.field_name:
+            detail_parts.append(f"поле: {e.field_name}")
+        if e.old_value:
+            detail_parts.append(f"было: {e.old_value}")
+        if e.new_value:
+            detail_parts.append(f"стало: {e.new_value}")
+        events.append({
+            "at": e.created_at,
+            "type": "audit",
+            "title": _AUDIT_TITLE_RU.get(e.action_type.value, e.action_type.value),
+            "detail": "; ".join(detail_parts),
+            "user": e.user.full_name if e.user else "—",
+        })
+
+    # Комментарии
+    for c in req.comments:
+        events.append({
+            "at": c.created_at,
+            "type": "comment",
+            "title": "Комментарий",
+            "detail": c.content,
+            "user": c.author.full_name if c.author else "—",
+        })
+
+    events.sort(key=lambda ev: ev["at"])
+    return {"req": req, "events": events}
+
+
+_AUDIT_TITLE_RU = {
+    "status_change": "Смена статуса",
+    "field_change": "Изменение поля",
+    "file_upload": "Загрузка файла",
+    "file_delete": "Удаление файла",
+    "executor_assigned": "Назначение исполнителя",
+    "executor_self_assigned": "Самостоятельное взятие в работу",
+    "rejected": "Отклонение заявки",
+    "acknowledged_rejection": "Ознакомление с отклонением",
+    "confirmed_execution": "Подтверждение исполнения",
+    "documents_confirmed": "Подтверждение комплектности документов",
+    "terms_proposed": "Предложение условий",
+    "terms_accepted": "Условия приняты",
+    "terms_rejected": "Условия отклонены",
+    "sent_for_manager_review": "Отправлено на проверку Руководителю",
+    "rework_requested": "Отправлено на доработку",
+    "closed_by_manager": "Закрытие заявки",
+    "created_for_requester": "Создано от имени Заказчика",
+    "comment_attachment_uploaded": "Вложение к комментарию",
+    "execution_recorded": "Фактическое исполнение зафиксировано",
+    "report_generated": "Сгенерирован отчёт",
+}

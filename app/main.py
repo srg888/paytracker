@@ -42,6 +42,7 @@ from app.services.reports import (
     overdue_requests_report,
     sla_report,
     clarification_report,
+    request_history_report,
 )
 
 
@@ -933,6 +934,18 @@ def request_detail(request: Request, request_id: int, db: Session = Depends(get_
         return RedirectResponse("/requests")
     ctx = _build_detail_context(request, db, req, user)
     return render(request, "request_detail.html", db, **ctx)
+
+
+@app.get("/requests/{request_id}/history")
+def request_history_view(request: Request, request_id: int, db: Session = Depends(get_db)):
+    """Полная история одной заявки (выгрузка из аудита) — только Руководитель/делегат."""
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    data = request_history_report(db, request_id)
+    if not data:
+        return RedirectResponse("/requests")
+    return render(request, "reports/request_history.html", db, **data)
 
 
 def _do_transition(request: Request, db: Session, request_id: int, fn, *args):

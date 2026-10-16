@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}История {{ req.number }} — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests/{{ req.id }}">&larr; К заявке</a>
+<h2>
+    <span style="color:#E61919;font-size:0.7em">// ПОЛНАЯ ИСТОРИЯ</span><br>
+    {{ req.number }} — {{ req.title }}
+    <span class="status-pill status-{{ req.status.value }}">{{ status_ru(req.status.value) }}</span>
+</h2>
+
+<div class="card">
+    <p style="font-family:'JetBrains Mono',monospace;font-size:13px">
+        ЗАКАЗЧИК: {{ req.requester.full_name if req.requester else '—' }} ·
+        ИСПОЛНИТЕЛЬ: {{ req.executor.full_name if req.executor else '—' }} ·
+        ПОДАНО: {{ req.submitted_at.strftime('%d.%m.%Y %H:%M') if req.submitted_at else '—' }} ·
+        ЗАКРЫТО: {{ req.closed_at.strftime('%d.%m.%Y %H:%M') if req.closed_at else '—' }}
+    </p>
+    <p><strong>СОБЫТИЙ: {{ events|length }}</strong></p>
+</div>
+
+<div class="card">
+    {% if events %}
+    <table>
+        <thead>
+            <tr>
+                <th>Дата</th>
+                <th>Событие</th>
+                <th>Детали</th>
+                <th>Пользователь</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ev in events %}
+            <tr>
+                <td style="white-space:nowrap">{{ ev.at.strftime('%d.%m.%Y %H:%M') }}</td>
+                <td>
+                    {% if ev.type == "status" %}<strong>{{ ev.title }}</strong>
+                    {% elif ev.type == "comment" %}<span style="color:#1a7f37">// {{ ev.title }}</span>
+                    {% else %}{{ ev.title }}{% endif %}
+                </td>
+                <td style="color:#555;font-size:12px">{{ ev.detail or "—" }}</td>
+                <td>{{ ev.user }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888;font-size:13px">Событий нет.</p>
+    {% endif %}
+</div>
+
+{% endblock %}

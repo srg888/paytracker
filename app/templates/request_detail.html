@@ -8,6 +8,9 @@
     {{ req.number }} — {{ req.title }}
     <span class="status-pill status-{{ req.status.value }}">{{ status_ru(req.status.value) or req.status.value }}</span>
 </h2>
+{% if acting_ruk %}
+<p style="font-size:13px"><a href="/requests/{{ req.id }}/history">→ ПОЛНАЯ ИСТОРИЯ ЗАЯВКИ (из аудита)</a></p>
+{% endif %}
 
 <div class="card">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 20px;font-size:13px">
