@@ -61,6 +61,28 @@ def _rub_amount(amount: str | Decimal, rate: Decimal | None) -> Decimal | None:
     return (Decimal(amount) * Decimal(rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _audit_field_change(
+    db: Session, req: RequestModel, user: User, field_name: str, old_value, new_value
+) -> None:
+    """Запись изменения поля заявки в аудит (BR-071: 'изменение заявки').
+    Пустые/неизменённые значения не логируем."""
+    old_s = "" if old_value is None else str(old_value)
+    new_s = "" if new_value is None else str(new_value)
+    if old_s == new_s:
+        return
+    db.add(
+        AuditLog(
+            entity_type="request",
+            entity_id=req.id,
+            user_id=user.id,
+            action_type=AuditActionType.FIELD_CHANGE,
+            field_name=field_name,
+            old_value=old_s or None,
+            new_value=new_s or None,
+        )
+    )
+
+
 APP_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 
@@ -292,12 +314,29 @@ def login_as(request: Request, user_id: int, db: Session = Depends(get_db)):
     if not user:
         return RedirectResponse("/login")
     request.session["user_id"] = user.id
+    db.add(AuditLog(
+        entity_type="user",
+        entity_id=user.id,
+        user_id=user.id,
+        action_type=AuditActionType.LOGIN,
+    ))
+    db.commit()
     return RedirectResponse("/requests")
 
 
 @app.get("/logout")
-def logout(request: Request):
+def logout(request: Request, db: Session = Depends(get_db)):
+    user_id = request.session.get("user_id")
+    user = db.get(User, user_id) if user_id else None
     request.session.clear()
+    if user:
+        db.add(AuditLog(
+            entity_type="user",
+            entity_id=user.id,
+            user_id=user.id,
+            action_type=AuditActionType.LOGOUT,
+        ))
+        db.commit()
     return RedirectResponse("/login")
 
 
@@ -648,9 +687,16 @@ async def edit_request_submit(
     if err:
         return err
 
+    # Аудит изменений полей (BR-071): фиксируем только реально изменившиеся.
+    _audit_field_change(db, req, user, "title", req.title, title)
     req.title = title
+    _audit_field_change(db, req, user, "division_id", req.division_id, division_id)
     req.division_id = division_id
+    old_expected = req.expected_date.isoformat() if req.expected_date else None
+    new_expected = expected_date or None
+    _audit_field_change(db, req, user, "expected_date", old_expected, new_expected)
     req.expected_date = date.fromisoformat(expected_date) if expected_date else None
+    _audit_field_change(db, req, user, "description", req.description, description or None)
     req.description = description or None
 
     if req.type == RequestType.PAYMENT:
@@ -661,18 +707,31 @@ async def edit_request_submit(
         currency = db.get(Currency, int(currency_id))
         rate, is_stale = get_rate_for_today(db, currency)
         amount_dec = amount or "0"
+        _audit_field_change(db, req, user, "purpose", pd.purpose, purpose)
         pd.purpose = purpose
+        _audit_field_change(db, req, user, "payment_purpose", pd.payment_purpose, payment_purpose)
         pd.payment_purpose = payment_purpose
+        _audit_field_change(db, req, user, "amount", pd.amount, amount_dec)
         pd.amount = amount_dec
+        _audit_field_change(db, req, user, "currency_id", pd.currency_id, currency.id)
         pd.currency_id = currency.id
+        _audit_field_change(db, req, user, "recipient_name", pd.recipient_name, recipient_name)
         pd.recipient_name = recipient_name
+        _audit_field_change(db, req, user, "recipient_country", pd.recipient_country, recipient_country)
         pd.recipient_country = recipient_country
+        _audit_field_change(db, req, user, "recipient_address", pd.recipient_address, recipient_address)
         pd.recipient_address = recipient_address
+        _audit_field_change(db, req, user, "recipient_bank", pd.recipient_bank, recipient_bank)
         pd.recipient_bank = recipient_bank
+        _audit_field_change(db, req, user, "account_number_iban", pd.account_number_iban, account_number_iban)
         pd.account_number_iban = account_number_iban
+        _audit_field_change(db, req, user, "swift_bic", pd.swift_bic, swift_bic)
         pd.swift_bic = swift_bic
+        _audit_field_change(db, req, user, "additional_payment_info", pd.additional_payment_info, additional_payment_info or None)
         pd.additional_payment_info = additional_payment_info or None
+        _audit_field_change(db, req, user, "payment_method", pd.payment_method.value if pd.payment_method else None, payment_method or None)
         pd.payment_method = PaymentMethod(payment_method) if payment_method else None
+        _audit_field_change(db, req, user, "agent_id", pd.agent_id, int(agent_id) if agent_id else None)
         pd.agent_id = int(agent_id) if agent_id else None
         pd.rate_at_request = rate
         pd.amount_rub_at_request = _rub_amount(amount_dec, rate)
@@ -680,11 +739,19 @@ async def edit_request_submit(
             flash(request, "Курс ЦБ не подтверждён — кэш пуст и cbr.ru недоступен.", "error")
     elif req.type == RequestType.PURCHASE:
         pd = req.purchase_details
+        _audit_field_change(db, req, user, "buyer_company_id", pd.buyer_company_id, int(buyer_company_id))
         pd.buyer_company_id = int(buyer_company_id)
+        _audit_field_change(db, req, user, "purchase_payment_method", pd.payment_method.value if pd.payment_method else None, purchase_payment_method or None)
         pd.payment_method = PaymentMethod(purchase_payment_method)
+        _audit_field_change(db, req, user, "markup_notes", pd.markup_notes, markup_notes or None)
         pd.markup_notes = markup_notes or None
+        _audit_field_change(db, req, user, "delivery_date", pd.delivery_date.isoformat() if pd.delivery_date else None, delivery_date or None)
         pd.delivery_date = date.fromisoformat(delivery_date) if delivery_date else None
     elif req.type == RequestType.CONSULTATION:
+        _audit_field_change(
+            db, req, user, "question_description",
+            req.consultation_details.question_description, question_description,
+        )
         req.consultation_details.question_description = question_description
 
     existing_docs = db.query(RequestDocument).filter(RequestDocument.request_id == req.id).all()
