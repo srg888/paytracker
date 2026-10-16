@@ -1707,16 +1707,25 @@ def reports_clarification_view(
     )
 
 
-@app.get("/reports/import")
-def reports_import_view(request: Request, db: Session = Depends(get_db)):
+@app.get("/settings")
+def settings_view(request: Request, db: Session = Depends(get_db)):
+    """Раздел «Настройки» — администрирование (справочники и т.п.)."""
     user = _require_rukovoditel(request, db)
     if not user:
         return RedirectResponse("/requests")
-    return render(request, "reports/report_import.html", db)
+    return render(request, "settings/settings.html", db)
 
 
-@app.post("/reports/import")
-async def reports_import_submit(
+@app.get("/settings/import")
+def settings_import_view(request: Request, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    return render(request, "settings/import.html", db)
+
+
+@app.post("/settings/import")
+async def settings_import_submit(
     request: Request,
     db: Session = Depends(get_db),
     reference: str = Form(...),
@@ -1728,18 +1737,18 @@ async def reports_import_submit(
 
     if reference not in import_refs.IMPORTERS:
         flash(request, "Неизвестный справочник.", "error")
-        return RedirectResponse("/reports/import", status_code=303)
+        return RedirectResponse("/settings/import", status_code=303)
     if not file or not file.filename:
         flash(request, "Выберите файл CSV.", "error")
-        return RedirectResponse("/reports/import", status_code=303)
+        return RedirectResponse("/settings/import", status_code=303)
     if not file.filename.lower().endswith(".csv"):
         flash(request, "Поддерживается только CSV.", "error")
-        return RedirectResponse("/reports/import", status_code=303)
+        return RedirectResponse("/settings/import", status_code=303)
 
     content = await file.read()
     if not content:
         flash(request, "Файл пуст.", "error")
-        return RedirectResponse("/reports/import", status_code=303)
+        return RedirectResponse("/settings/import", status_code=303)
 
     try:
         from io import BytesIO
@@ -1747,7 +1756,7 @@ async def reports_import_submit(
         result = import_refs.IMPORTERS[reference](db, BytesIO(content))
     except ImportError_ as e:
         flash(request, str(e), "error")
-        return RedirectResponse("/reports/import", status_code=303)
+        return RedirectResponse("/settings/import", status_code=303)
 
     # Аудит импорта справочника
     db.add(
@@ -1763,4 +1772,4 @@ async def reports_import_submit(
     db.commit()
 
     flash(request, f"Импорт «{reference}»: добавлено {result['added']}, обновлено {result['updated']}, пропущено {result['skipped']}.")
-    return RedirectResponse("/reports/import", status_code=303)
+    return RedirectResponse("/settings/import", status_code=303)

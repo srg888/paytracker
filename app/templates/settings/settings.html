@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Настройки — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests">&larr; К списку заявок</a>
+<h2>// НАСТРОЙКИ</h2>
+
+<div class="card">
+    <h3>[ Справочники ]</h3>
+    <p style="font-size:13px">
+        <a href="/settings/import">→ ИМПОРТ СПРАВОЧНИКОВ ИЗ CSV</a>
+        <span style="color:#888">— агенты, компании-покупатели, курсы валют</span>
+    </p>
+</div>
+
+{% endblock %}

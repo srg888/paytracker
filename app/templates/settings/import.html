@@ -2,10 +2,10 @@
 {% block title %}Импорт справочников — PayTracker{% endblock %}
 {% block content %}
 
-<a href="/reports">&larr; К отчётам</a>
+<a href="/settings">&larr; К настройкам</a>
 <h2>// ИМПОРТ СПРАВОЧНИКОВ (CSV)</h2>
 
-<form class="card" method="post" action="/reports/import" enctype="multipart/form-data">
+<form class="card" method="post" action="/settings/import" enctype="multipart/form-data">
     <label>СПРАВОЧНИК</label>
     <select name="reference" required>
         <option value="agents">Агенты</option>
