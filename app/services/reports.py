@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, Any
 
@@ -395,3 +396,69 @@ def generate_report_list(db: Session, selected_fields: list, filters: dict, expo
     db.commit()
     db.refresh(report)
     return report
+
+
+# --- Базовый отчёт: количество заявок за период (BR-090) ---
+
+
+def request_counts_report(
+    db: Session,
+    date_from: date | None,
+    date_to: date | None,
+    request_type: str | None = None,
+    status: str | None = None,
+) -> dict:
+    """Количество заявок за период в разрезах: исполнитель, заказчик,
+    подразделение, тип, агент (только платёжные). Период — по submitted_at.
+
+    Возвращает dict вида:
+    {
+      "period": (date_from, date_to),
+      "sections": [
+        {"title": "По исполнителю", "rows": [(label, count), ...]},
+        ...
+      ],
+      "total": int
+    }
+    """
+    q = db.query(Request)
+    if request_type:
+        q = q.filter(Request.type == request_type)
+    if status:
+        q = q.filter(Request.status == status)
+    if date_from:
+        q = q.filter(Request.submitted_at >= date(date_from.year, date_from.month, date_from.day))
+    if date_to:
+        q = q.filter(Request.submitted_at < date(date_to.year, date_to.month, date_to.day) + timedelta(days=1))
+    requests = q.all()
+
+    def _count_by(key_fn):
+        counts: dict[str, int] = {}
+        for r in requests:
+            label = key_fn(r) or "—"
+            counts[label] = counts.get(label, 0) + 1
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+    sections = [
+        {"title": "По исполнителю", "rows": _count_by(lambda r: r.executor.full_name if r.executor else None)},
+        {"title": "По заказчику", "rows": _count_by(lambda r: r.requester.full_name if r.requester else None)},
+        {"title": "По подразделению", "rows": _count_by(lambda r: r.division.name if r.division else None)},
+        {"title": "По типу заявки", "rows": _count_by(lambda r: r.type.value if r.type else None)},
+    ]
+
+    # По агенту — только платёжные заявки с указанным агентом
+    agent_counts: dict[str, int] = {}
+    for r in requests:
+        if r.type == RequestType.PAYMENT and r.payment_details and r.payment_details.agent:
+            label = r.payment_details.agent.code
+            agent_counts[label] = agent_counts.get(label, 0) + 1
+    sections.append({
+        "title": "По агенту (платёжные)",
+        "rows": sorted(agent_counts.items(), key=lambda kv: (-kv[1], kv[0])),
+    })
+
+    return {
+        "period": (date_from, date_to),
+        "sections": sections,
+        "total": len(requests),
+    }

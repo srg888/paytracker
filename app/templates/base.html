@@ -10,7 +10,7 @@
         <a href="/requests" class="brand">[ PAYTRACKER ]</a>
         {% if current_user %}
         <span class="user-info">&gt; {{ current_user.full_name }} <span class="badge">{{ current_user.role.value }}</span></span>
-        {% if current_user.role.value == "rukovoditel" %}<a href="/delegations" class="nav-link">// ДЕЛЕГИРОВАНИЕ</a><a href="/audit" class="nav-link">// АУДИТ</a>{% endif %}
+        {% if current_user.role.value == "rukovoditel" %}<a href="/delegations" class="nav-link">// ДЕЛЕГИРОВАНИЕ</a><a href="/audit" class="nav-link">// АУДИТ</a><a href="/reports" class="nav-link">// ОТЧЁТЫ</a>{% endif %}
         <a href="/logout" class="logout">X ВЫЙТИ</a>
         {% endif %}
     </header>

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Отчётность — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/requests">&larr; К списку заявок</a>
+<h2>// ОТЧЁТНОСТЬ: ЗАЯВКИ ЗА ПЕРИОД</h2>
+
+<form class="card" method="get" action="/reports" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+        <label>С (дата подачи)</label>
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </div>
+    <div>
+        <label>По</label>
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </div>
+    <div>
+        <label>Тип заявки</label>
+        <select name="request_type">
+            <option value="">— все —</option>
+            {% for t in request_types %}
+            <option value="{{ t }}" {{ "selected" if request_type == t else "" }}>{{ type_ru.get(t, t) }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div>
+        <label>Статус</label>
+        <select name="status">
+            <option value="">— все —</option>
+            {% for s in statuses %}
+            <option value="{{ s }}" {{ "selected" if status == s else "" }}>{{ status_ru(s) }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <button type="submit" class="btn" style="background:#222;color:#fff">[ ПОКАЗАТЬ ]</button>
+</form>
+
+<div class="card">
+    <p style="font-family:'JetBrains Mono',monospace;font-size:13px">
+        // ПЕРИОД: {{ date_from or '—' }} … {{ date_to or '—' }}
+        {% if request_type %} | ТИП: {{ type_ru.get(request_type, request_type) }}{% endif %}
+        {% if status %} | СТАТУС: {{ status_ru(status) }}{% endif %}
+    </p>
+    <p><strong>ВСЕГО ЗАЯВОК: {{ data.total }}</strong></p>
+</div>
+
+{% for section in data.sections %}
+<div class="card">
+    <h3>[ {{ section.title }} ]</h3>
+    {% if section.rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Значение</th>
+                <th>Кол-во</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for label, count in section.rows %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td>{{ label }}</td>
+                <td><strong>{{ count }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888;font-size:13px">Нет данных за выбранный период.</p>
+    {% endif %}
+</div>
+{% else %}
+<div class="card"><p>Нет данных.</p></div>
+{% endfor %}
+
+{% endblock %}

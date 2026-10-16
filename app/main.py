@@ -34,7 +34,7 @@ from app.services import status_machine
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
-from app.services.reports import generate_report, generate_report_list
+from app.services.reports import generate_report, generate_report_list, request_counts_report
 
 
 class ReportRequestPayload(BaseModel):
@@ -1522,3 +1522,48 @@ def audit_log_view(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/requests")
     entries = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(200).all()
     return render(request, "audit.html", db, entries=entries)
+
+
+# --- Отчётность (BR-090): количество заявок за период ---
+
+
+@app.get("/reports")
+def reports_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    date_from: str = "",
+    date_to: str = "",
+    request_type: str = "",
+    status: str = "",
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    frm = date.fromisoformat(date_from) if date_from else None
+    to = date.fromisoformat(date_to) if date_to else None
+    if frm and to and frm > to:
+        flash(request, "Дата начала не может быть позже даты окончания.", "error")
+        frm = to = None
+
+    data = request_counts_report(
+        db,
+        date_from=frm,
+        date_to=to,
+        request_type=request_type or None,
+        status=status or None,
+    )
+    return render(
+        request,
+        "reports/report_counts.html",
+        db,
+        data=data,
+        date_from=date_from,
+        date_to=date_to,
+        request_type=request_type,
+        status=status,
+        request_types=[t.value for t in RequestType],
+        statuses=list(_STATUS_RU.keys()),
+        status_ru=_STATUS_RU.get,
+        type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
+    )
