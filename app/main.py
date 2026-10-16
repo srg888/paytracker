@@ -41,6 +41,7 @@ from app.services.reports import (
     payment_sums_report,
     overdue_requests_report,
     sla_report,
+    clarification_report,
 )
 
 
@@ -1661,4 +1662,32 @@ def reports_sla_view(
         date_from=date_from,
         date_to=date_to,
         type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
+    )
+
+
+@app.get("/reports/clarification")
+def reports_clarification_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    date_from: str = "",
+    date_to: str = "",
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    frm = date.fromisoformat(date_from) if date_from else None
+    to = date.fromisoformat(date_to) if date_to else None
+    if frm and to and frm > to:
+        flash(request, "Дата начала не может быть позже даты окончания.", "error")
+        frm = to = None
+
+    data = clarification_report(db, date_from=frm, date_to=to)
+    return render(
+        request,
+        "reports/report_clarification.html",
+        db,
+        data=data,
+        date_from=date_from,
+        date_to=date_to,
     )

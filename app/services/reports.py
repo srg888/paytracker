@@ -623,3 +623,66 @@ def sla_report(db: Session, date_from: date | None = None, date_to: date | None 
         total = {"count": len(total_seconds), "avg_seconds": avg, "avg_hours": avg / 3600, "avg_days": avg / 86400}
 
     return {"rows": rows, "total": total}
+
+
+# --- Отчёт: заявки, прошедшие через "Уточнение" ---
+
+
+def clarification_report(
+    db: Session,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict:
+    """Сколько заявок за период проходили через статус "Уточнение"
+    (индикатор качества исходных данных от Заказчиков).
+
+    Заявка "прошла через уточнение", если в её истории статусов есть переход
+    в CLARIFICATION. Период — по дате подачи (submitted_at).
+
+    Возвращает:
+    {
+      "total": int,            # всего заявок за период
+      "clarified": int,        # из них проходили через уточнение
+      "percent": float | None, # доля, %
+      "by_requester": [(full_name, count), ...],  # по заказчикам (кол-во уточнённых)
+    }
+    """
+    from app.models.status_history import RequestStatusHistory
+
+    q = db.query(Request)
+    if date_from:
+        q = q.filter(Request.submitted_at >= date_from)
+    if date_to:
+        q = q.filter(Request.submitted_at < date_to + timedelta(days=1))
+    requests = q.all()
+    total = len(requests)
+
+    # Ищем заявки, у которых был переход в CLARIFICATION
+    clarified_ids = set()
+    if requests:
+        req_ids = [r.id for r in requests]
+        rows = (
+            db.query(RequestStatusHistory.request_id)
+            .filter(RequestStatusHistory.request_id.in_(req_ids))
+            .filter(RequestStatusHistory.to_status == RequestStatus.CLARIFICATION)
+            .distinct()
+            .all()
+        )
+        clarified_ids = {rid for (rid,) in rows}
+
+    clarified = len(clarified_ids)
+    percent = (clarified / total * 100) if total else None
+
+    # По заказчикам: сколько уточнённых заявок у каждого
+    by_requester: dict[str, int] = {}
+    for r in requests:
+        if r.id in clarified_ids:
+            name = r.requester.full_name if r.requester else "—"
+            by_requester[name] = by_requester.get(name, 0) + 1
+
+    return {
+        "total": total,
+        "clarified": clarified,
+        "percent": percent,
+        "by_requester": sorted(by_requester.items(), key=lambda kv: (-kv[1], kv[0])),
+    }
