@@ -30,7 +30,8 @@ from app.models.comment import RequestComment
 from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
-from app.services import status_machine
+from app.services import status_machine, import_refs
+from app.services.import_refs import ImportError_
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
@@ -1704,3 +1705,62 @@ def reports_clarification_view(
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@app.get("/reports/import")
+def reports_import_view(request: Request, db: Session = Depends(get_db)):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    return render(request, "reports/report_import.html", db)
+
+
+@app.post("/reports/import")
+async def reports_import_submit(
+    request: Request,
+    db: Session = Depends(get_db),
+    reference: str = Form(...),
+    file: UploadFile = File(None),
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    if reference not in import_refs.IMPORTERS:
+        flash(request, "Неизвестный справочник.", "error")
+        return RedirectResponse("/reports/import", status_code=303)
+    if not file or not file.filename:
+        flash(request, "Выберите файл CSV.", "error")
+        return RedirectResponse("/reports/import", status_code=303)
+    if not file.filename.lower().endswith(".csv"):
+        flash(request, "Поддерживается только CSV.", "error")
+        return RedirectResponse("/reports/import", status_code=303)
+
+    content = await file.read()
+    if not content:
+        flash(request, "Файл пуст.", "error")
+        return RedirectResponse("/reports/import", status_code=303)
+
+    try:
+        from io import BytesIO
+
+        result = import_refs.IMPORTERS[reference](db, BytesIO(content))
+    except ImportError_ as e:
+        flash(request, str(e), "error")
+        return RedirectResponse("/reports/import", status_code=303)
+
+    # Аудит импорта справочника
+    db.add(
+        AuditLog(
+            entity_type="reference",
+            entity_id=0,
+            user_id=user.id,
+            action_type=AuditActionType.REFERENCE_IMPORTED,
+            field_name=reference,
+            new_value=f"добавлено {result['added']}, обновлено {result['updated']}, пропущено {result['skipped']}",
+        )
+    )
+    db.commit()
+
+    flash(request, f"Импорт «{reference}»: добавлено {result['added']}, обновлено {result['updated']}, пропущено {result['skipped']}.")
+    return RedirectResponse("/reports/import", status_code=303)

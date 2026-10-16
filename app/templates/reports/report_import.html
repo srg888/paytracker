@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Импорт справочников — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/reports">&larr; К отчётам</a>
+<h2>// ИМПОРТ СПРАВОЧНИКОВ (CSV)</h2>
+
+<form class="card" method="post" action="/reports/import" enctype="multipart/form-data">
+    <label>СПРАВОЧНИК</label>
+    <select name="reference" required>
+        <option value="agents">Агенты</option>
+        <option value="buyer_companies">Компании-покупатели</option>
+        <option value="exchange_rates">Курсы валют</option>
+    </select>
+    <label>ФАЙЛ CSV</label>
+    <input type="file" name="file" accept=".csv,text/csv" required>
+    <button type="submit" class="btn" style="background:#222;color:#fff">[ ИМПОРТИРОВАТЬ ]</button>
+</form>
+
+<div class="card">
+    <h3>[ Формат файла ]</h3>
+    <p style="font-size:13px"><strong>Агенты:</strong> <code>code,name,is_resident,is_active,is_own_company</code><br>
+        пример: <code>АП,Альфа Пэй,,true,false</code> (код — ключ; существующие обновляются)</p>
+    <p style="font-size:13px"><strong>Компании-покупатели:</strong> <code>name,is_active</code><br>
+        пример: <code>МастерТрейд,true</code></p>
+    <p style="font-size:13px"><strong>Курсы валют:</strong> <code>currency,date,rate</code><br>
+        пример: <code>USD,2026-10-16,93.76</code> (код валюты должен существовать)</p>
+</div>
+
+{% endblock %}

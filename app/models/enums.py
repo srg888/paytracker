@@ -72,6 +72,7 @@ class AuditActionType(str, enum.Enum):
     COMMENT_ATTACHMENT_UPLOADED = "comment_attachment_uploaded"
     REPORT_GENERATED = "report_generated"
     EXECUTION_RECORDED = "execution_recorded"
+    REFERENCE_IMPORTED = "reference_imported"
 
 
 class ExportFormat(str, enum.Enum):
