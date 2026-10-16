@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.report import Report
 from app.models.request import Request, PaymentRequest
-from app.models.enums import RequestType
+from app.models.enums import RequestType, RequestStatus
 
 REPORT_DIR = Path("/app/uploads/reports")
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -534,3 +534,38 @@ def payment_sums_report(
         "by_agent": _sort(by_agent),
         "grand_total_rub": grand,
     }
+
+
+# --- Отчёт: просроченные заявки ---
+
+
+def overdue_requests_report(
+    db: Session,
+    as_of: date | None = None,
+    request_type: str | None = None,
+) -> list[dict]:
+    """Просроченные заявки: не завершённые (не Закрыта/Архив/Отклонена), у которых
+    ожидаемый срок исполнения (expected_date) меньше as_of (по умолчанию — сегодня).
+
+    Возвращает список dict'ов: request, expected_date, days_overdue.
+    """
+    today = as_of or date.today()
+    finished_statuses = (RequestStatus.CLOSED, RequestStatus.ARCHIVED, RequestStatus.REJECTED)
+
+    q = (
+        db.query(Request)
+        .filter(Request.status.notin_(finished_statuses))
+        .filter(Request.expected_date.isnot(None))
+        .filter(Request.expected_date < today)
+    )
+    if request_type:
+        q = q.filter(Request.type == request_type)
+
+    result = []
+    for r in q.order_by(Request.expected_date).all():
+        result.append({
+            "request": r,
+            "expected_date": r.expected_date,
+            "days_overdue": (today - r.expected_date).days,
+        })
+    return result

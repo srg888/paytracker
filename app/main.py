@@ -34,7 +34,13 @@ from app.services import status_machine
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
 from app.services.roles import is_acting_rukovoditel
-from app.services.reports import generate_report, generate_report_list, request_counts_report, payment_sums_report
+from app.services.reports import (
+    generate_report,
+    generate_report_list,
+    request_counts_report,
+    payment_sums_report,
+    overdue_requests_report,
+)
 
 
 class ReportRequestPayload(BaseModel):
@@ -1602,4 +1608,27 @@ def reports_sums_view(
         date_to=date_to,
         currency_id=currency_id,
         currencies=db.query(Currency).order_by(Currency.code).all(),
+    )
+
+
+@app.get("/reports/overdue")
+def reports_overdue_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    request_type: str = "",
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    overdue = overdue_requests_report(db, request_type=request_type or None)
+    return render(
+        request,
+        "reports/report_overdue.html",
+        db,
+        overdue=overdue,
+        today=date.today(),
+        request_type=request_type,
+        request_types=[t.value for t in RequestType],
+        type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
     )

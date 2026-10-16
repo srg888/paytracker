@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Просроченные заявки — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/reports">&larr; К отчётам</a>
+<h2>// ОТЧЁТНОСТЬ: ПРОСРОЧЕННЫЕ ЗАЯВКИ</h2>
+
+<form class="card" method="get" action="/reports/overdue" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+        <label>Тип заявки</label>
+        <select name="request_type">
+            <option value="">— все —</option>
+            {% for t in request_types %}
+            <option value="{{ t }}" {{ "selected" if request_type == t else "" }}>{{ type_ru.get(t, t) }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <button type="submit" class="btn" style="background:#222;color:#fff">[ ПОКАЗАТЬ ]</button>
+</form>
+
+<div class="card">
+    <p style="font-family:'JetBrains Mono',monospace;font-size:13px">
+        // НА ДАТУ: {{ today }} | ПРОСРОЧЕНО: <strong>{{ overdue|length }}</strong>
+        (заявки не завершены, ожидаемый срок исполнения в прошлом)
+    </p>
+</div>
+
+<div class="card">
+    {% if overdue %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Номер</th>
+                <th>Название</th>
+                <th>Тип</th>
+                <th>Статус</th>
+                <th>Заказчик</th>
+                <th>Исполнитель</th>
+                <th>Ожидаемый срок</th>
+                <th>Просрочка, дней</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in overdue %}
+            <tr onclick="location.href='/requests/{{ item.request.id }}'" style="cursor:pointer">
+                <td>{{ loop.index }}</td>
+                <td><strong>{{ item.request.number }}</strong></td>
+                <td>{{ item.request.title }}</td>
+                <td>{{ type_ru.get(item.request.type.value, item.request.type.value) }}</td>
+                <td><span class="status-pill status-{{ item.request.status.value }}">{{ status_ru(item.request.status.value) }}</span></td>
+                <td>{{ item.request.requester.full_name if item.request.requester else "—" }}</td>
+                <td>{{ item.request.executor.full_name if item.request.executor else "—" }}</td>
+                <td>{{ item.expected_date }}</td>
+                <td><strong style="color:#E61919">{{ item.days_overdue }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888;font-size:13px">Просроченных заявок нет.</p>
+    {% endif %}
+</div>
+
+{% endblock %}
