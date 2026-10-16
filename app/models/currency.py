@@ -31,6 +31,8 @@ class ExchangeRate(Base, TimestampMixin):
     currency_id: Mapped[int] = mapped_column(ForeignKey("currencies.id"), nullable=False)
     rate_date: Mapped[date] = mapped_column(Date, nullable=False)
     rate_value: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    # Источник курса (BR-061): "cbr.ru" — свежий, "last_known" — устаревший из кэша
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # true, если курс на эту дату не удалось обновить из cbr.ru и мы отдаём последний известный
     is_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

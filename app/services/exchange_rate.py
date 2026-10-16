@@ -48,10 +48,12 @@ def get_rate_for_today(db: Session, currency: Currency) -> tuple[Decimal | None,
             if existing:
                 existing.rate_value = value
                 existing.is_stale = False
+                existing.source = "cbr.ru"
             else:
                 db.add(
                     ExchangeRate(
-                        currency_id=currency.id, rate_date=today, rate_value=value, is_stale=False
+                        currency_id=currency.id, rate_date=today, rate_value=value,
+                        is_stale=False, source="cbr.ru",
                     )
                 )
             db.flush()

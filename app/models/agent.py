@@ -17,3 +17,6 @@ class Agent(Base, TimestampMixin):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_resident: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Признак "наша собственная компания" (см. Словарь: Платёжный агент) —
+    # при маршруте через такого агента комплект документов тот же (ПА-01…ПА-08).
+    is_own_company: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

@@ -14,6 +14,10 @@ DIVISIONS = ["Дирекция закупок", "Дирекция логисти
 
 AGENTS = ["ТиР", "Али", "А", "Эп"]
 
+# Коды агентов, которые являются нашей собственной компанией (см. Словарь: Платёжный агент).
+# По умолчанию — ни один; пример: "ТиР" как наша компания.
+OWN_COMPANY_AGENT_CODES = {"ТиР"}
+
 BUYER_COMPANIES = ["М", "BC", "Al", "Аз", "Az", "HK", "MT"]
 
 DOCUMENT_TYPES = [
@@ -54,6 +58,11 @@ def seed_all(db: Session) -> None:
     _seed_simple(db, Currency, "code", CURRENCIES, lambda v: {"code": v})
     _seed_simple(db, Division, "name", DIVISIONS, lambda v: {"name": v})
     _seed_simple(db, Agent, "code", AGENTS, lambda v: {"code": v})
+    # Дозаполняем признак "наша компания" (миграция добавила колонку со значением false)
+    for code in OWN_COMPANY_AGENT_CODES:
+        agent = db.query(Agent).filter(Agent.code == code).first()
+        if agent and not agent.is_own_company:
+            agent.is_own_company = True
     _seed_simple(db, BuyerCompany, "name", BUYER_COMPANIES, lambda v: {"name": v})
 
     for code, name, category, is_required, recipient_service in DOCUMENT_TYPES:

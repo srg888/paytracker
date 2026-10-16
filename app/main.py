@@ -1,6 +1,8 @@
 import os
+import asyncio
 import uuid
-from datetime import date, datetime
+from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -211,7 +213,38 @@ def _get_session_secret() -> str:
     )
 
 
-app = FastAPI(title="PayTracker MVP")
+def _background_rate_updater() -> None:
+    """Фоновая дозагрузка курсов ЦБ (см. заявки на платежи.md, 'Edge case: cbr.ru недоступен').
+    Раз в час пробуем обновить сегодняшний курс для всех активных валют; при успехе —
+    значение и is_stale обновляются в кэше (кэш уже наполнен основным вызовом)."""
+    import time
+
+    from app.db.session import SessionLocal
+    from app.services.exchange_rate import get_rate_for_today
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                currencies = db.query(Currency).all()
+                for c in currencies:
+                    get_rate_for_today(db, c)  # обновит кэш, если cbr.ru доступен
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass  # не роняем воркер из-за единичного сбоя
+        time.sleep(3600)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    task = asyncio.create_task(asyncio.to_thread(_background_rate_updater))
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="PayTracker MVP", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=_get_session_secret())
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
@@ -312,6 +345,10 @@ def login_page(request: Request, db: Session = Depends(get_db)):
 def login_as(request: Request, user_id: int, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:
+        return RedirectResponse("/login")
+    # BR-002: неактивный пользователь не может входить в систему
+    if not user.is_active:
+        flash(request, "Учётная запись деактивирована. Обратитесь к администратору.", "error")
         return RedirectResponse("/login")
     request.session["user_id"] = user.id
     db.add(AuditLog(
@@ -1355,6 +1392,7 @@ def delegation_create(
     delegate_id: int = Form(...),
     start_date: str = Form(...),
     end_date: str = Form(...),
+    reason: str = Form(""),
     db: Session = Depends(get_db),
 ):
     user = _require_rukovoditel(request, db)
@@ -1387,7 +1425,13 @@ def delegation_create(
         flash(request, "Дата начала не может быть позже даты окончания.", "error")
         return RedirectResponse("/delegations", status_code=303)
 
-    delegation = Delegation(delegator_id=user.id, delegate_id=delegate_id, start_date=start, end_date=end)
+    delegation = Delegation(
+        delegator_id=user.id,
+        delegate_id=delegate_id,
+        start_date=start,
+        end_date=end,
+        reason=reason or None,
+    )
     db.add(delegation)
     db.flush()
     db.add(AuditLog(entity_type="delegation", entity_id=delegation.id, user_id=user.id, action_type=AuditActionType.DELEGATION_STARTED))

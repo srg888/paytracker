@@ -15,6 +15,8 @@
     <input type="date" name="start_date" value="{{ current_date }}" required>
     <label>Дата окончания</label>
     <input type="date" name="end_date" required>
+    <label>Причина делегирования</label>
+    <textarea name="reason" rows="2"></textarea>
     <button type="submit">Создать делегирование</button>
 </form>
 
@@ -26,6 +28,7 @@
             <th>Делегат</th>
             <th>Начало</th>
             <th>Окончание</th>
+            <th>Причина</th>
             <th>Статус</th>
             <th>Действия</th>
         </tr>
@@ -37,6 +40,7 @@
             <td>{{ d.delegate.full_name }}</td>
             <td>{{ d.start_date }}</td>
             <td>{{ d.end_date }}</td>
+            <td>{% if d.reason %}{{ d.reason }}{% else %}—{% endif %}</td>
             <td>
                 {% if d.revoked_at %}
                     <span class="status-pill status-archived">Отозвано</span>
