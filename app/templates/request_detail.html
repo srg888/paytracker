@@ -38,6 +38,20 @@
     {% if req.payment_details.agreed_commission_amount %}
     <p><strong style="color:#111;font-family:'JetBrains Mono',monospace;font-size:12px">// СОГЛАСОВАННАЯ КОМИССИЯ:</strong> {{ req.payment_details.agreed_commission_amount }} | <strong>КУРС:</strong> {{ req.payment_details.agreed_rate }}{% if req.payment_details.agreed_execution_deadline %} | <strong>СРОК:</strong> {{ req.payment_details.agreed_execution_deadline }}{% endif %}</p>
     {% endif %}
+    {% if req.payment_details.executions %}
+    <h4>// ФАКТИЧЕСКОЕ ИСПОЛНЕНИЕ</h4>
+    {% for ex in req.payment_details.executions %}
+    <div style="font-size:13px;padding:4px 0;border-top:1px solid #eee">
+        <strong>ДАТА:</strong> {{ ex.executed_at }} |
+        <strong>СУММА:</strong> {{ ex.amount }} {{ ex.currency.code if ex.currency else '—' }}
+        {% if ex.amount_rub is not none %} <span style="color:#888">(≈ {{ ex.amount_rub }} ₽)</span>{% endif %}
+        {% if ex.rate is not none %} | <strong>КУРС:</strong> {{ ex.rate }}{% endif %}
+        {% if ex.method %} | <strong>СПОСОБ:</strong> {{ ex.method.value }}{% endif %}
+        {% if ex.operation_id %} | <strong>ОПЕРАЦИЯ:</strong> {{ ex.operation_id }}{% endif %}
+        {% if ex.comment %} <span style="color:#888">// {{ ex.comment }}</span>{% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
     {% endif %}
 
     {% if req.purchase_details %}
@@ -117,9 +131,41 @@
     {% endif %}
 
     {% if can_mark_done %}
+    {% if req.payment_details %}
+    <p><strong style="color:#E61919">// ФАКТИЧЕСКОЕ ИСПОЛНЕНИЕ (BR-080/082):</strong> данные о реально совершённой операции</p>
+    <form method="post" action="/requests/{{ req.id }}/mark_done" style="display:inline">
+        <label>ДАТА ИСПОЛНЕНИЯ</label>
+        <input type="date" name="executed_at" required>
+        <div class="two-col">
+            <div>
+                <label>ФАКТИЧЕСКАЯ СУММА</label>
+                <input type="number" step="0.01" name="executed_amount" required>
+            </div>
+            <div>
+                <label>ВАЛЮТА</label>
+                <select name="executed_currency_id" required>
+                    {% for c in currencies %}
+                    <option value="{{ c.id }}"{% if req.payment_details.currency_id == c.id %} selected{% endif %}>{{ c.code }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <label>СПОСОБ ИСПОЛНЕНИЯ</label>
+        <select name="executed_method">
+            <option value="bank">БАНКОВСКИЙ ПЕРЕВОД</option>
+            <option value="agent">ЧЕРЕЗ АГЕНТА</option>
+        </select>
+        <label>ИДЕНТИФИКАТОР ОПЕРАЦИИ (ПЛАТЁЖКИ/СВИФТ)</label>
+        <input type="text" name="operation_id">
+        <label>КОММЕНТАРИЙ</label>
+        <textarea name="execution_comment" rows="2"></textarea>
+        <button type="submit">[ ИСПОЛНЕНИЕ ЗАВЕРШЕНО ]</button>
+    </form>
+    {% else %}
     <form method="post" action="/requests/{{ req.id }}/mark_done" style="display:inline">
         <button type="submit">[ ИСПОЛНЕНИЕ ЗАВЕРШЕНО ]</button>
     </form>
+    {% endif %}
     {% endif %}
 
     {% if can_confirm_execution %}

@@ -71,6 +71,7 @@ class AuditActionType(str, enum.Enum):
     CREATED_FOR_REQUESTER = "created_for_requester"
     COMMENT_ATTACHMENT_UPLOADED = "comment_attachment_uploaded"
     REPORT_GENERATED = "report_generated"
+    EXECUTION_RECORDED = "execution_recorded"
 
 
 class ExportFormat(str, enum.Enum):

@@ -294,14 +294,27 @@ def generate_report_list(db: Session, selected_fields: list, filters: dict, expo
             elif field == "Подразделение":
                 row.append(req.division.name if req.division else "")
             elif field == "Сумма":
-                # Для платёжных заявок — сумма из payment_details, иначе пусто
-                if req.type == RequestType.PAYMENT and req.payment_details and req.payment_details.amount is not None:
-                    row.append(float(req.payment_details.amount))
+                # Для платёжных заявок — фактически исполненная сумма (BR-091),
+                # если есть запись исполнения, иначе заявленная из payment_details.
+                if req.type == RequestType.PAYMENT and req.payment_details:
+                    ex = req.payment_details.executions[-1] if req.payment_details.executions else None
+                    if ex is not None and ex.amount is not None:
+                        row.append(float(ex.amount))
+                    elif req.payment_details.amount is not None:
+                        row.append(float(req.payment_details.amount))
+                    else:
+                        row.append("")
                 else:
                     row.append("")
             elif field == "Валюта":
-                if req.type == RequestType.PAYMENT and req.payment_details and req.payment_details.currency:
-                    row.append(req.payment_details.currency.code)
+                if req.type == RequestType.PAYMENT and req.payment_details:
+                    ex = req.payment_details.executions[-1] if req.payment_details.executions else None
+                    if ex is not None and ex.currency:
+                        row.append(ex.currency.code)
+                    elif req.payment_details.currency:
+                        row.append(req.payment_details.currency.code)
+                    else:
+                        row.append("")
                 else:
                     row.append("")
             elif field == "Отправлено":

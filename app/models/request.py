@@ -116,6 +116,10 @@ class PaymentRequest(Base):
     terms_proposals: Mapped[list["PaymentTermsProposal"]] = relationship(
         back_populates="payment_request", cascade="all, delete-orphan"
     )
+    executions: Mapped[list["PaymentExecution"]] = relationship(
+        back_populates="payment_request", cascade="all, delete-orphan",
+        order_by="PaymentExecution.created_at",
+    )
 
 
 class PurchaseRequest(Base):

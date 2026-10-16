@@ -22,6 +22,7 @@ from app.models.document import RequestDocument, RequestDocumentRequirement
 from app.models.document_type import DocumentType
 from app.models.enums import AuditActionType, PaymentMethod, PaymentTermsDecision, RequestStatus, RequestType, UserRole
 from app.models.payment_terms_proposal import PaymentTermsProposal
+from app.models.payment_execution import PaymentExecution
 from app.models.request import ConsultationRequest, PaymentRequest, PurchaseRequest, Request as RequestModel
 from app.models.comment import RequestComment
 from app.models.delegation import Delegation
@@ -806,6 +807,7 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
             )
         },
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
+        currencies=db.query(Currency).all(),
     )
 
 
@@ -873,7 +875,17 @@ def action_answer_clarification(
 
 
 @app.post("/requests/{request_id}/mark_done")
-def action_mark_done(request: Request, request_id: int, db: Session = Depends(get_db)):
+def action_mark_done(
+    request: Request,
+    request_id: int,
+    db: Session = Depends(get_db),
+    executed_at: str = Form(""),
+    executed_amount: str = Form(""),
+    executed_currency_id: str = Form(""),
+    executed_method: str = Form(""),
+    operation_id: str = Form(""),
+    execution_comment: str = Form(""),
+):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
@@ -881,6 +893,41 @@ def action_mark_done(request: Request, request_id: int, db: Session = Depends(ge
     if not req:
         return RedirectResponse("/requests")
     try:
+        # BR-080/081/082: для платёжных заявок фиксируем фактическое исполнение
+        # (отдельная сущность). Для закупки/консультации отдельного исполнения нет.
+        if req.payment_details:
+            exec_date = date.fromisoformat(executed_at) if executed_at else None
+            if exec_date is None:
+                flash(request, "Укажите дату фактического исполнения.", "error")
+                return RedirectResponse(f"/requests/{request_id}", status_code=303)
+            if not executed_amount:
+                flash(request, "Укажите фактически исполненную сумму.", "error")
+                return RedirectResponse(f"/requests/{request_id}", status_code=303)
+            if not executed_currency_id:
+                flash(request, "Укажите валюту исполнения.", "error")
+                return RedirectResponse(f"/requests/{request_id}", status_code=303)
+            execution = PaymentExecution(
+                payment_request_id=req.payment_details.request_id,
+                executed_at=exec_date,
+                amount=Decimal(executed_amount),
+                currency_id=int(executed_currency_id),
+                method=PaymentMethod(executed_method) if executed_method else None,
+                operation_id=operation_id or None,
+                comment=execution_comment or None,
+                created_by_id=user.id,
+            )
+            db.add(execution)
+            db.flush()
+            db.add(
+                AuditLog(
+                    entity_type="request",
+                    entity_id=req.id,
+                    user_id=user.id,
+                    action_type=AuditActionType.EXECUTION_RECORDED,
+                    field_name="execution",
+                    new_value=f"{executed_amount} {execution.currency.code if execution.currency else ''}",
+                )
+            )
         status_machine.mark_execution_done(db, req, user)
         db.commit()
         flash(request, "Исполнение отмечено как завершённое.")
@@ -901,12 +948,17 @@ def action_confirm_execution(request: Request, request_id: int, db: Session = De
     try:
         status_machine.confirm_execution(db, req, user)
         # фиксируем курс ЦБ на дату фактического исполнения (см. заявки на платежи.md,
-        # раздел "Подтверждение исполнения Заказчиком")
+        # раздел "Подтверждение исполнения Заказчиком") — в запись PaymentExecution,
+        # а не только в заявку. Обратно совместимо: старые поля заявки тоже заполняем.
         if req.payment_details:
             rate, is_stale = get_rate_for_today(db, req.payment_details.currency)
             if rate is not None:
                 req.payment_details.rate_at_execution = rate
                 req.payment_details.amount_rub_at_execution = _rub_amount(req.payment_details.amount, rate)
+                if req.payment_details.executions:
+                    ex = req.payment_details.executions[-1]
+                    ex.rate = rate
+                    ex.amount_rub = _rub_amount(ex.amount, rate)
         db.commit()
         flash(request, "Исполнение подтверждено.")
     except status_machine.TransitionError as e:
