@@ -569,3 +569,57 @@ def overdue_requests_report(
             "days_overdue": (today - r.expected_date).days,
         })
     return result
+
+
+# --- Отчёт: среднее время обработки (SLA) ---
+
+
+def sla_report(db: Session, date_from: date | None = None, date_to: date | None = None) -> dict:
+    """Среднее время обработки закрытых заявок (от подачи submitted_at до
+    закрытия closed_at), в разрезе по типу заявки и общее. Для контроля SLA.
+
+    Возвращает:
+    {
+      "rows": [{"type": str, "count": int, "avg_seconds": float, "avg_hours": float, "avg_days": float}, ...],
+      "total": {"count": int, "avg_days": float, ...},
+    }
+    """
+    from datetime import datetime as _dt
+
+    q = (
+        db.query(Request)
+        .filter(Request.status == RequestStatus.CLOSED)
+        .filter(Request.submitted_at.isnot(None))
+        .filter(Request.closed_at.isnot(None))
+    )
+    if date_from:
+        q = q.filter(Request.closed_at >= _dt(date_from.year, date_from.month, date_from.day))
+    if date_to:
+        q = q.filter(Request.closed_at < _dt(date_to.year, date_to.month, date_to.day) + timedelta(days=1))
+
+    closed = q.all()
+    by_type: dict[str, list[float]] = {}
+    for r in closed:
+        seconds = (r.closed_at - r.submitted_at).total_seconds()
+        if seconds < 0:
+            seconds = 0.0
+        by_type.setdefault(r.type.value, []).append(seconds)
+
+    rows = []
+    for t, seconds_list in sorted(by_type.items()):
+        avg = sum(seconds_list) / len(seconds_list)
+        rows.append({
+            "type": t,
+            "count": len(seconds_list),
+            "avg_seconds": avg,
+            "avg_hours": avg / 3600,
+            "avg_days": avg / 86400,
+        })
+
+    total_seconds = [s for lst in by_type.values() for s in lst]
+    total = None
+    if total_seconds:
+        avg = sum(total_seconds) / len(total_seconds)
+        total = {"count": len(total_seconds), "avg_seconds": avg, "avg_hours": avg / 3600, "avg_days": avg / 86400}
+
+    return {"rows": rows, "total": total}

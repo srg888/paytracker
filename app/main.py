@@ -40,6 +40,7 @@ from app.services.reports import (
     request_counts_report,
     payment_sums_report,
     overdue_requests_report,
+    sla_report,
 )
 
 
@@ -1630,5 +1631,34 @@ def reports_overdue_view(
         today=date.today(),
         request_type=request_type,
         request_types=[t.value for t in RequestType],
+        type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
+    )
+
+
+@app.get("/reports/sla")
+def reports_sla_view(
+    request: Request,
+    db: Session = Depends(get_db),
+    date_from: str = "",
+    date_to: str = "",
+):
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+
+    frm = date.fromisoformat(date_from) if date_from else None
+    to = date.fromisoformat(date_to) if date_to else None
+    if frm and to and frm > to:
+        flash(request, "Дата начала не может быть позже даты окончания.", "error")
+        frm = to = None
+
+    data = sla_report(db, date_from=frm, date_to=to)
+    return render(
+        request,
+        "reports/report_sla.html",
+        db,
+        data=data,
+        date_from=date_from,
+        date_to=date_to,
         type_ru={"payment": "Платёж", "purchase": "Закупка", "consultation": "Консультация"},
     )

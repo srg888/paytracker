@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Среднее время обработки (SLA) — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/reports">&larr; К отчётам</a>
+<h2>// ОТЧЁТНОСТЬ: СРЕДНЕЕ ВРЕМЯ ОБРАБОТКИ (SLA)</h2>
+
+<form class="card" method="get" action="/reports/sla" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+        <label>Закрыто с</label>
+        <input type="date" name="date_from" value="{{ date_from }}">
+    </div>
+    <div>
+        <label>по</label>
+        <input type="date" name="date_to" value="{{ date_to }}">
+    </div>
+    <button type="submit" class="btn" style="background:#222;color:#fff">[ ПОКАЗАТЬ ]</button>
+</form>
+
+<div class="card">
+    {% if data.total %}
+    <p><strong>ВСЕГО ЗАКРЫТО: {{ data.total.count }}</strong> · среднее время обработки: <strong>{{ "%.1f"|format(data.total.avg_days) }} дн</strong> ({{ "%.1f"|format(data.total.avg_hours) }} ч)</p>
+    {% else %}
+    <p style="color:#888;font-size:13px">Закрытых заявок за период нет.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    {% if data.rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>Тип заявки</th>
+                <th>Кол-во закрытых</th>
+                <th>Среднее, дн</th>
+                <th>Среднее, ч</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data.rows %}
+            <tr>
+                <td>{{ type_ru.get(row.type, row.type) }}</td>
+                <td>{{ row.count }}</td>
+                <td><strong>{{ "%.1f"|format(row.avg_days) }}</strong></td>
+                <td>{{ "%.1f"|format(row.avg_hours) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888;font-size:13px">Нет данных.</p>
+    {% endif %}
+</div>
+
+{% endblock %}
