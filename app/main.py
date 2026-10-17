@@ -507,9 +507,6 @@ def new_request_type_select(request: Request, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     return render(request, "request_type_select.html", db)
 
 
@@ -585,10 +582,14 @@ async def create_request(
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
     # BR-015: Руководитель/делегат может создать заявку от имени Заказчика.
+    # BR-016: Исполнитель — тоже (он выбирает Заказчика из списка; сам исполнять будет он).
     # requester_id из формы берём только если это разрешено и указан реальный пользователь.
     target_requester_id = user.id
     can_pick_requester = user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
-    if can_pick_requester and requester_id:
+    can_create_as_executor = (
+        user.role == UserRole.ISPOLNITEL and not can_pick_requester
+    )
+    if (can_pick_requester or can_create_as_executor) and requester_id:
         try:
             target_requester_id = int(requester_id)
         except ValueError:
@@ -598,11 +599,6 @@ async def create_request(
         if not requester_user or requester_user.role != UserRole.ZAKAZCHIK or not requester_user.is_active:
             flash(request, "Указанный Заказчик не найден или неактивен.", "error")
             return RedirectResponse(f"/requests/new/{req_type}", status_code=303)
-    # BR-016: Исполнитель может создавать заявку от своего имени
-    # или от имени Заказчика (выбранного в форме).
-    can_create_as_executor = (
-        user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user)
-    )
 
     req = RequestModel(
         number="",
