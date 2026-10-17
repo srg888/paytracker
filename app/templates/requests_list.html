@@ -20,22 +20,12 @@
         <tr>
             {% for label in columns %}
             <th data-col="{{ loop.index0 }}">
-                <div class="th-head">
-                    <span>{{ label }}</span>
-                    <button type="button" class="filter-btn" onclick="toggleFilterMenu({{ loop.index0 }}, event)" title="Фильтр">⏷</button>
-                </div>
-                <div class="filter-menu" id="filter-menu-{{ loop.index0 }}" onclick="event.stopPropagation()">
-                    <input type="text" class="filter-menu-search" placeholder="Поиск..." oninput="filterMenuSearch({{ loop.index0 }}, this.value)">
-                    <div class="filter-menu-actions">
-                        <a onclick="selectAllInMenu({{ loop.index0 }})">Выбрать все</a>
-                        <a onclick="clearAllInMenu({{ loop.index0 }})">Очистить</a>
-                    </div>
-                    <div class="filter-menu-list"></div>
-                    <div class="filter-menu-buttons">
-                        <button type="button" class="primary" onclick="applyFilter({{ loop.index0 }})">OK</button>
-                        <button type="button" onclick="closeFilterMenu({{ loop.index0 }})">Отмена</button>
-                    </div>
-                </div>
+                <span class="th-label">{{ label }}</span>
+                <button type="button" class="filter-btn" data-col="{{ loop.index0 }}" title="Фильтр по колонке «{{ label }}»" aria-label="Фильтр по колонке «{{ label }}»">
+                    <svg viewBox="0 0 10 12" width="10" height="12" aria-hidden="true" focusable="false">
+                        <path d="M0.5 1 L9.5 1 L6 5.2 L6 10.5 L4 9 L4 5.2 Z" fill="currentColor"/>
+                    </svg>
+                </button>
             </th>
             {% endfor %}
         </tr>
@@ -60,6 +50,27 @@
         {% endfor %}
     </tbody>
 </table>
+
+{# Одна общая выпадающая панель фильтра (как в Excel): открывается под кнопкой
+   той колонки, по которой нажали. Так в разметке нет 11 копий меню, а позиция
+   пересчитывается при открытии — панель не уезжает за край экрана. #}
+<div class="filter-menu" id="filter-menu" role="dialog" aria-label="Фильтр по колонке">
+    <div class="filter-menu-title" id="filter-menu-title"></div>
+    <input type="text" class="filter-menu-search" id="filter-menu-search" placeholder="Поиск по значениям" autocomplete="off">
+    <label class="filter-menu-sort">
+        <input type="checkbox" id="filter-menu-sort-toggle">
+        <span>Сортировать по возрастанию</span>
+    </label>
+    <div class="filter-menu-list" id="filter-menu-list"></div>
+    <div class="filter-menu-actions">
+        <a class="filter-menu-link" id="filter-menu-all">(Выделить все)</a>
+        <a class="filter-menu-link" id="filter-menu-none">(Снять все)</a>
+    </div>
+    <div class="filter-menu-buttons">
+        <button type="button" class="primary" id="filter-menu-ok">OK</button>
+        <button type="button" id="filter-menu-cancel">Отмена</button>
+    </div>
+</div>
 
 <script>
 function exportReports(format) {
@@ -86,27 +97,49 @@ function exportReports(format) {
     }).catch(err => alert('Ошибка сети: ' + err));
 }
 
-// --- Автофильтр по колонкам (как в Excel): чекбокс-список различных значений
-// каждой колонки, построенный из уже отрисованных строк таблицы. Чисто
-// клиентская фильтрация (скрытие строк), без повторных запросов к серверу —
-// список заявок и так загружается целиком за один запрос.
+// --- Автофильтр по колонкам (как в Excel) ---
+// Клик по воронке в заголовке открывает выпадающий список различных значений
+// этой колонки, построенный из уже отрисованных строк. Фильтрация чисто
+// клиентская (скрытие/показ строк) — без обращений к серверу.
 (function () {
     var table = document.getElementById('requests-table');
     if (!table) return;
+
     var ths = Array.prototype.slice.call(table.querySelectorAll('thead th[data-col]'));
     var rows = Array.prototype.slice.call(table.querySelectorAll('tbody tr[data-row]'));
-    var activeFilters = {}; // colIndex (строка) -> Set выбранных значений; колонка без записи — фильтр не применён
+    var menu = document.getElementById('filter-menu');
+    var titleEl = document.getElementById('filter-menu-title');
+    var searchEl = document.getElementById('filter-menu-search');
+    var sortEl = document.getElementById('filter-menu-sort-toggle');
+    var listEl = document.getElementById('filter-menu-list');
+
+    // col -> Set выбранных значений; колонка без записи = фильтр не применён
+    var activeFilters = {};
+    // состояние текущей открытой панели
+    var cur = { col: null, btn: null, values: [], selected: null, sortAsc: false };
 
     function cellValue(row, col) {
         var cell = row.children[col];
         if (!cell) return '';
-        return cell.hasAttribute('data-filter-value') ? cell.getAttribute('data-filter-value') : cell.textContent.trim();
+        return cell.hasAttribute('data-filter-value')
+            ? cell.getAttribute('data-filter-value')
+            : cell.textContent.trim();
     }
 
     function distinctValues(col) {
-        var set = {};
-        rows.forEach(function (r) { set[cellValue(r, col)] = true; });
-        return Object.keys(set).sort(function (a, b) { return a.localeCompare(b, 'ru'); });
+        var seen = {};
+        rows.forEach(function (r) { seen[cellValue(r, col)] = true; });
+        return Object.keys(seen);
+    }
+
+    function compareValues(a, b) {
+        // числа — по значению, даты ISO (YYYY-MM-DD) и текст — по локали
+        var na = parseFloat(String(a).replace(/\s/g, '').replace(',', '.'));
+        var nb = parseFloat(String(b).replace(/\s/g, '').replace(',', '.'));
+        if (!isNaN(na) && !isNaN(nb) && /^[\d\s.,-]+$/.test(a) && /^[\d\s.,-]+$/.test(b)) {
+            return na - nb;
+        }
+        return String(a).localeCompare(String(b), 'ru');
     }
 
     function escapeHtml(s) {
@@ -115,79 +148,94 @@ function exportReports(format) {
         return d.innerHTML;
     }
 
-    function buildMenu(col) {
-        var menu = document.getElementById('filter-menu-' + col);
-        var list = menu.querySelector('.filter-menu-list');
-        var values = distinctValues(col);
-        var selected = activeFilters[col];
-        list.innerHTML = values.map(function (v) {
-            var checked = !selected || selected.indexOf(v) !== -1;
-            var label = v === '' ? '(пусто)' : escapeHtml(v);
-            return '<label><input type="checkbox" value="' + escapeHtml(v) + '"' + (checked ? ' checked' : '') + '> ' + label + '</label>';
+    function renderList() {
+        var q = (searchEl.value || '').trim().toLowerCase();
+        var values = cur.values.slice();
+        if (cur.sortAsc) values.sort(compareValues);
+        else values.sort(function (a, b) { return compareValues(a, b); });
+
+        var shown = values.filter(function (v) {
+            return v.toLowerCase().indexOf(q) !== -1;
+        });
+        if (!shown.length) {
+            listEl.innerHTML = '<div class="filter-menu-empty">Нет совпадений</div>';
+            return;
+        }
+        listEl.innerHTML = shown.map(function (v) {
+            var checked = cur.selected.indexOf(v) !== -1;
+            var label = v === '' ? '<span class="filter-menu-blank">(пусто)</span>' : escapeHtml(v);
+            return '<label class="filter-menu-item">' +
+                '<input type="checkbox" value="' + escapeHtml(v) + '"' + (checked ? ' checked' : '') + '>' +
+                '<span class="filter-menu-item-label">' + label + '</span>' +
+                '</label>';
         }).join('');
-        menu.querySelector('.filter-menu-search').value = '';
     }
 
-    function closeAllMenus(exceptCol) {
-        document.querySelectorAll('.filter-menu.open').forEach(function (m) {
-            if (exceptCol === undefined || m.id !== 'filter-menu-' + exceptCol) m.classList.remove('open');
-        });
-    }
-
-    document.addEventListener('click', function (e) {
-        if (!e.target.closest('.filter-menu') && !e.target.closest('.filter-btn')) closeAllMenus();
-    });
-
-    window.toggleFilterMenu = function (col, evt) {
-        evt.stopPropagation();
-        var menu = document.getElementById('filter-menu-' + col);
-        var isOpen = menu.classList.contains('open');
-        closeAllMenus();
-        if (!isOpen) {
-            buildMenu(col);
-            menu.classList.add('open');
+    function positionMenu(btn) {
+        var r = btn.getBoundingClientRect();
+        var mw = menu.offsetWidth || 260;
+        var mh = menu.offsetHeight || 320;
+        var left = r.left + window.pageXOffset;
+        var pad = 8;
+        // не выезжать за правый край
+        if (left + mw > window.pageXOffset + document.documentElement.clientWidth - pad) {
+            left = window.pageXOffset + document.documentElement.clientWidth - mw - pad;
         }
-    };
+        if (left < window.pageXOffset + pad) left = window.pageXOffset + pad;
+        var top = r.bottom + window.pageYOffset + 2;
+        // если снизу не помещается — открыть вверх
+        if (r.bottom + mh + pad > document.documentElement.clientHeight) {
+            var up = r.top + window.pageYOffset - mh - 2;
+            if (up > window.pageYOffset + pad) top = up;
+        }
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+    }
 
-    window.filterMenuSearch = function (col, q) {
-        q = q.trim().toLowerCase();
-        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label').forEach(function (l) {
-            l.style.display = l.textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
-        });
-    };
+    function closeMenu() {
+        menu.classList.remove('open');
+        if (cur.btn) cur.btn.classList.remove('active-open');
+        cur.col = null;
+        cur.btn = null;
+    }
 
-    window.selectAllInMenu = function (col) {
-        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label:not([style*="display: none"]) input').forEach(function (cb) { cb.checked = true; });
-    };
+    function openMenu(th, btn) {
+        var col = th.getAttribute('data-col');
+        var label = th.querySelector('.th-label').textContent.trim();
+        cur.col = col;
+        cur.btn = btn;
+        cur.values = distinctValues(col);
+        cur.selected = activeFilters.hasOwnProperty(col)
+            ? activeFilters[col].slice()
+            : cur.values.slice();
+        cur.sortAsc = false;
 
-    window.clearAllInMenu = function (col) {
-        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label:not([style*="display: none"]) input').forEach(function (cb) { cb.checked = false; });
-    };
+        titleEl.textContent = label;
+        searchEl.value = '';
+        sortEl.checked = false;
+        menu.classList.add('open');
+        // сначала показать, потом измерить и спозиционировать
+        renderList();
+        positionMenu(btn);
+        if (cur.btn) cur.btn.classList.add('active-open');
+        searchEl.focus();
+    }
 
-    window.applyFilter = function (col) {
-        var checked = Array.prototype.slice.call(
-            document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list input:checked')
-        ).map(function (cb) { return cb.value; });
+    function applyFromMenu() {
+        var col = cur.col;
+        if (col === null) return;
+        var checked = Array.prototype.slice
+            .call(listEl.querySelectorAll('input[type="checkbox"]:checked'))
+            .map(function (cb) { return cb.value; });
+        // если выбраны все значения колонки — фильтр снимаем (как «Все» в Excel)
         var all = distinctValues(col);
-        if (checked.length === all.length) {
-            delete activeFilters[col];
-        } else {
-            activeFilters[col] = checked;
-        }
-        closeAllMenus();
+        var allSelected = all.length === checked.length;
+        if (allSelected) delete activeFilters[col];
+        else activeFilters[col] = checked;
+        closeMenu();
         updateFilterIcons();
         applyAllFilters();
-    };
-
-    window.closeFilterMenu = function (col) {
-        document.getElementById('filter-menu-' + col).classList.remove('open');
-    };
-
-    window.resetAllFilters = function () {
-        activeFilters = {};
-        updateFilterIcons();
-        applyAllFilters();
-    };
+    }
 
     function updateFilterIcons() {
         ths.forEach(function (th) {
@@ -210,6 +258,76 @@ function exportReports(format) {
         var counter = document.getElementById('filter-count');
         if (counter) counter.textContent = visible + ' ИЗ ' + rows.length;
     }
+
+    // Открытие/закрытие по клику на воронку
+    ths.forEach(function (th) {
+        var btn = th.querySelector('.filter-btn');
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var isSame = menu.classList.contains('open') && cur.btn === btn;
+            if (isSame) { closeMenu(); return; }
+            closeMenu();
+            openMenu(th, btn);
+        });
+    });
+
+    document.addEventListener('click', function (e) {
+        if (!menu.contains(e.target) && !e.target.closest('.filter-btn')) closeMenu();
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeMenu();
+    });
+
+    window.addEventListener('resize', function () {
+        if (menu.classList.contains('open') && cur.btn) positionMenu(cur.btn);
+    });
+    window.addEventListener('scroll', function () {
+        if (menu.classList.contains('open') && cur.btn) positionMenu(cur.btn);
+    }, true);
+
+    searchEl.addEventListener('input', renderList);
+
+    sortEl.addEventListener('change', function () {
+        cur.sortAsc = sortEl.checked;
+        renderList();
+    });
+
+    // отметить/снять — сразу в состоянии панели, список перерисовывается
+    listEl.addEventListener('change', function (e) {
+        var cb = e.target;
+        if (!cb || cb.type !== 'checkbox') return;
+        var v = cb.value;
+        var i = cur.selected.indexOf(v);
+        if (cb.checked && i === -1) cur.selected.push(v);
+        if (!cb.checked && i !== -1) cur.selected.splice(i, 1);
+    });
+
+    document.getElementById('filter-menu-all').addEventListener('click', function (e) {
+        e.preventDefault();
+        cur.selected = cur.values.slice();
+        renderList();
+    });
+    document.getElementById('filter-menu-none').addEventListener('click', function (e) {
+        e.preventDefault();
+        cur.selected = [];
+        renderList();
+    });
+    document.getElementById('filter-menu-ok').addEventListener('click', function (e) {
+        e.preventDefault();
+        applyFromMenu();
+    });
+    document.getElementById('filter-menu-cancel').addEventListener('click', function (e) {
+        e.preventDefault();
+        closeMenu();
+    });
+
+    window.resetAllFilters = function () {
+        activeFilters = {};
+        updateFilterIcons();
+        applyAllFilters();
+        closeMenu();
+    };
 })();
 </script>
 {% endblock %}
