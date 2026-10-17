@@ -277,12 +277,20 @@ templates.env.globals["status_ru"] = _STATUS_RU.get
 
 def render(request: Request, template: str, db: Session, **context):
     current_user = get_current_user(request, db)
+    # Доступ к «Отчётам/Аудиту/Настройкам» — Руководитель и Исполнители.
+    # (Делегатами могут быть только они же — см. матрицу прав, так что роль покрывает и делегатов.)
+    can_view_analytics = bool(
+        current_user and current_user.role in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL)
+    )
+    can_manage_delegations = bool(current_user and current_user.role == UserRole.RUKOVODITEL)
     return templates.TemplateResponse(
         request,
         template,
         {
             "current_user": current_user,
             "flash_messages": pop_flash(request),
+            "can_view_analytics": can_view_analytics,
+            "can_manage_delegations": can_manage_delegations,
             **context,
         },
     )
@@ -507,9 +515,6 @@ def new_request_type_select(request: Request, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     return render(request, "request_type_select.html", db)
 
 
@@ -518,14 +523,14 @@ def new_request_form(request: Request, req_type: str, db: Session = Depends(get_
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
     ctx = _reference_data(db)
     ctx["can_pick_requester"] = (
         user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
+    )
+    ctx["can_create_as_executor"] = (
+        user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user)
     )
     ctx["can_choose_payment_method"] = _can_choose_payment_method(user)
     ctx["current_user"] = user
@@ -575,9 +580,6 @@ async def create_request(
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
 
@@ -588,10 +590,14 @@ async def create_request(
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
     # BR-015: Руководитель/делегат может создать заявку от имени Заказчика.
+    # BR-016: Исполнитель — тоже (он выбирает Заказчика из списка; сам исполнять будет он).
     # requester_id из формы берём только если это разрешено и указан реальный пользователь.
     target_requester_id = user.id
     can_pick_requester = user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
-    if can_pick_requester and requester_id:
+    can_create_as_executor = (
+        user.role == UserRole.ISPOLNITEL and not can_pick_requester
+    )
+    if (can_pick_requester or can_create_as_executor) and requester_id:
         try:
             target_requester_id = int(requester_id)
         except ValueError:
@@ -923,6 +929,8 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         can_rework=acting_ruk and req.status == RequestStatus.MANAGER_REVIEW,
         can_upload_document=can_upload_document,
         acting_ruk=acting_ruk,
+        # Полная история заявки доступна тем же ролям, что и раздел «Аудит».
+        can_view_history=user.role in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL),
         attachments=attachments,
         executors=db.query(User)
         .filter(User.role.in_([UserRole.ISPOLNITEL, UserRole.RUKOVODITEL]))
@@ -961,7 +969,7 @@ def request_detail(request: Request, request_id: int, db: Session = Depends(get_
 @app.get("/requests/{request_id}/history")
 def request_history_view(request: Request, request_id: int, db: Session = Depends(get_db)):
     """Полная история одной заявки (выгрузка из аудита) — только Руководитель/делегат."""
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
     data = request_history_report(db, request_id)
@@ -1409,9 +1417,21 @@ async def action_upload_document(
 
 
 def _require_rukovoditel(request: Request, db: Session) -> User | None:
+    """Строгая проверка «только Руководитель» — для управления делегированием
+    и прочих действий, которые Исполнителю недоступны."""
     user = require_login(request, db)
     if not user or user.role != UserRole.RUKOVODITEL:
         flash(request, "Доступно только Руководителю.", "error")
+        return None
+    return user
+
+
+def _require_analytics_access(request: Request, db: Session) -> User | None:
+    """Доступ к разделам «Отчёты», «Аудит» и «Настройки»: Руководитель,
+    действующий делегат его полномочий и Исполнитель (Заказчику — закрыто)."""
+    user = require_login(request, db)
+    if not user or user.role not in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL):
+        flash(request, "Доступно Руководителю и Исполнителям.", "error")
         return None
     return user
 
@@ -1560,7 +1580,7 @@ def toggle_document_requirement(request: Request, request_id: int, doc_type_code
 
 @app.get("/audit")
 def audit_log_view(request: Request, db: Session = Depends(get_db)):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
     entries = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(200).all()
@@ -1579,7 +1599,7 @@ def reports_view(
     request_type: str = "",
     status: str = "",
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
@@ -1620,7 +1640,7 @@ def reports_sums_view(
     date_to: str = "",
     currency_id: str = "",
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
@@ -1654,7 +1674,7 @@ def reports_overdue_view(
     db: Session = Depends(get_db),
     request_type: str = "",
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
@@ -1678,7 +1698,7 @@ def reports_sla_view(
     date_from: str = "",
     date_to: str = "",
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
@@ -1707,7 +1727,7 @@ def reports_clarification_view(
     date_from: str = "",
     date_to: str = "",
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
@@ -1731,7 +1751,7 @@ def reports_clarification_view(
 @app.get("/settings")
 def settings_view(request: Request, db: Session = Depends(get_db)):
     """Раздел «Настройки» — администрирование (справочники и т.п.)."""
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
     return render(request, "settings/settings.html", db)
@@ -1739,7 +1759,7 @@ def settings_view(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/settings/import")
 def settings_import_view(request: Request, db: Session = Depends(get_db)):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
     return render(request, "settings/import.html", db)
@@ -1752,7 +1772,7 @@ async def settings_import_submit(
     reference: str = Form(...),
     file: UploadFile = File(None),
 ):
-    user = _require_rukovoditel(request, db)
+    user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
 
