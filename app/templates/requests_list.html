@@ -54,7 +54,7 @@
 {# Одна общая выпадающая панель фильтра (как в Excel): открывается под кнопкой
    той колонки, по которой нажали. Так в разметке нет 11 копий меню, а позиция
    пересчитывается при открытии — панель не уезжает за край экрана. #}
-<div class="filter-menu" id="filter-menu" role="dialog" aria-label="Фильтр по колонке">
+<div class="filter-menu" id="filter-menu" role="dialog" aria-label="Фильтр по колонке" hidden>
     <div class="filter-menu-title" id="filter-menu-title"></div>
     <input type="text" class="filter-menu-search" id="filter-menu-search" placeholder="Поиск по значениям" autocomplete="off">
     <label class="filter-menu-sort">
@@ -194,6 +194,7 @@ function exportReports(format) {
 
     function closeMenu() {
         menu.classList.remove('open');
+        menu.hidden = true;
         if (cur.btn) cur.btn.classList.remove('active-open');
         cur.col = null;
         cur.btn = null;
@@ -213,6 +214,7 @@ function exportReports(format) {
         titleEl.textContent = label;
         searchEl.value = '';
         sortEl.checked = false;
+        menu.hidden = false;
         menu.classList.add('open');
         // сначала показать, потом измерить и спозиционировать
         renderList();

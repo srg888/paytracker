@@ -321,6 +321,8 @@ th[data-col] .th-label { vertical-align: middle; }
     cursor: default;
 }
 .filter-menu.open { display: block; }
+/* страховка: панель скрыта, пока её не открыли (атрибут hidden снимается в JS) */
+.filter-menu[hidden] { display: none !important; }
 
 .filter-menu-title {
     padding: 8px 10px 6px;

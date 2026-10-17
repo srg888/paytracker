@@ -275,6 +275,22 @@ _STATUS_RU = {
 
 templates.env.globals["status_ru"] = _STATUS_RU.get
 
+
+def _static_version(filename: str) -> str:
+    """Версия статики по mtime файла — подставляется в ссылку (?v=...) в base.html.
+
+    Без этого браузер держит style.css в эвристическом кеше (StaticFiles не отдаёт
+    Cache-Control), и после обновления стилей показывается старая версия — из-за чего
+    невидимые по умолчанию выпадающие панели выглядели как часть страницы.
+    """
+    try:
+        return str(int(os.path.getmtime(os.path.join(APP_DIR, "static", filename))))
+    except OSError:
+        return "0"
+
+
+templates.env.globals["static_version"] = _static_version
+
 def render(request: Request, template: str, db: Session, **context):
     current_user = get_current_user(request, db)
     # Доступ к «Отчётам/Аудиту/Настройкам» — Руководитель и Исполнители.
