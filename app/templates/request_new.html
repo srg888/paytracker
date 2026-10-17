@@ -89,10 +89,12 @@
     <label>Дополнительная платёжная информация</label>
     <textarea name="additional_payment_info" rows="2">{{ req.payment_details.additional_payment_info if editing and req.payment_details and req.payment_details.additional_payment_info else '' }}</textarea>
 
+    {% if can_choose_payment_method %}
     <label>Способ оплаты</label>
     <select name="payment_method" onchange="toggleAgent(this.value)">
-        <option value="bank" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method.value == 'bank' else "" }}>Прямой платёж через банк</option>
-        <option value="agent" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method.value == 'agent' else "" }}>Через платёжного агента</option>
+        <option value="" {{ "selected" if not (editing and req.payment_details and req.payment_details.payment_method) else "" }}>— не определён —</option>
+        <option value="bank" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method and req.payment_details.payment_method.value == 'bank' else "" }}>Прямой платёж через банк</option>
+        <option value="agent" {{ "selected" if editing and req.payment_details and req.payment_details.payment_method and req.payment_details.payment_method.value == 'agent' else "" }}>Через платёжного агента</option>
     </select>
     <div id="agent-field">
         <label>Агент</label>
@@ -103,6 +105,9 @@
             {% endfor %}
         </select>
     </div>
+    {% else %}
+    <p style="color:#888">Способ оплаты определит Исполнитель при согласовании условий исполнения.</p>
+    {% endif %}
     {% endif %}
 
     {% if req_type == "purchase" or (editing and req.type.value == "purchase") %}

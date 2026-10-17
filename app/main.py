@@ -527,6 +527,7 @@ def new_request_form(request: Request, req_type: str, db: Session = Depends(get_
     ctx["can_pick_requester"] = (
         user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
     )
+    ctx["can_choose_payment_method"] = _can_choose_payment_method(user)
     ctx["current_user"] = user
     return render(request, "request_new.html", db, editing=False, req=None, req_type=req_type, **ctx)
 
@@ -579,6 +580,10 @@ async def create_request(
         return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
+
+    # BR-130: способ оплаты и агент при платёжной заявке — поле Руководителя/Исполнителя,
+    # Заказчик его не выбирает (ни на форме, ни отправкой произвольного значения напрямую).
+    can_choose_payment_method = _can_choose_payment_method(user)
 
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
@@ -646,8 +651,8 @@ async def create_request(
             account_number_iban=account_number_iban,
             swift_bic=swift_bic,
             additional_payment_info=additional_payment_info or None,
-            payment_method=PaymentMethod(payment_method) if payment_method else None,
-            agent_id=int(agent_id) if agent_id else None,
+            payment_method=PaymentMethod(payment_method) if (can_choose_payment_method and payment_method) else None,
+            agent_id=int(agent_id) if (can_choose_payment_method and agent_id) else None,
             rate_at_request=rate_at_request,
             amount_rub_at_request=amount_rub,
         )
@@ -675,6 +680,12 @@ async def create_request(
     return RedirectResponse(f"/requests/{req.id}", status_code=303)
 
 
+def _can_choose_payment_method(user: User) -> bool:
+    """BR-130: способ оплаты (прямой банк / агент) при платёжной заявке выбирают
+    Руководитель и Исполнители — это решение казначейства, а не Заказчика."""
+    return user.role in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL)
+
+
 def _require_editable_draft(db: Session, request: Request, request_id: int, user: User):
     """Общая проверка для редактирования: заявка существует, в статусе Черновик,
     и текущий пользователь — её автор. Возвращает (req, error_redirect_or_None)."""
@@ -695,7 +706,11 @@ def edit_request_form(request: Request, request_id: int, db: Session = Depends(g
     req, err = _require_editable_draft(db, request, request_id, user)
     if err:
         return err
-    return render(request, "request_new.html", db, editing=True, req=req, **_reference_data(db))
+    return render(
+        request, "request_new.html", db, editing=True, req=req,
+        can_choose_payment_method=_can_choose_payment_method(user),
+        **_reference_data(db),
+    )
 
 
 @app.post("/requests/{request_id}/edit")
@@ -733,6 +748,9 @@ async def edit_request_submit(
     req, err = _require_editable_draft(db, request, request_id, user)
     if err:
         return err
+
+    # BR-130: см. create_request — то же ограничение действует и при редактировании черновика.
+    can_choose_payment_method = _can_choose_payment_method(user)
 
     # Аудит изменений полей (BR-071): фиксируем только реально изменившиеся.
     _audit_field_change(db, req, user, "title", req.title, title)
@@ -776,10 +794,13 @@ async def edit_request_submit(
         pd.swift_bic = swift_bic
         _audit_field_change(db, req, user, "additional_payment_info", pd.additional_payment_info, additional_payment_info or None)
         pd.additional_payment_info = additional_payment_info or None
-        _audit_field_change(db, req, user, "payment_method", pd.payment_method.value if pd.payment_method else None, payment_method or None)
-        pd.payment_method = PaymentMethod(payment_method) if payment_method else None
-        _audit_field_change(db, req, user, "agent_id", pd.agent_id, int(agent_id) if agent_id else None)
-        pd.agent_id = int(agent_id) if agent_id else None
+        if can_choose_payment_method:
+            _audit_field_change(db, req, user, "payment_method", pd.payment_method.value if pd.payment_method else None, payment_method or None)
+            pd.payment_method = PaymentMethod(payment_method) if payment_method else None
+            _audit_field_change(db, req, user, "agent_id", pd.agent_id, int(agent_id) if agent_id else None)
+            pd.agent_id = int(agent_id) if agent_id else None
+        # иначе (Заказчик) — поле скрыто в форме; значение, выставленное ранее
+        # Руководителем/Исполнителем (или ещё не выставленное), не трогаем.
         pd.rate_at_request = rate
         pd.amount_rub_at_request = _rub_amount(amount_dec, rate)
         if rate is None:
