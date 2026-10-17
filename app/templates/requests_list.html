@@ -9,22 +9,44 @@
     <button onclick="exportReports('xlsx')" class="btn" style="background:#222;color:#fff;">↓ XLSX</button>
 </div>
 
-<table>
+<div class="filters-toolbar">
+    <span>ПОКАЗАНО: <strong id="filter-count">{{ requests|length }} ИЗ {{ requests|length }}</strong></span>
+    <button type="button" class="btn-small" onclick="resetAllFilters()">⟲ СБРОСИТЬ ФИЛЬТРЫ</button>
+</div>
+
+{% set columns = ["№", "ТИП", "НАЗВАНИЕ", "СТАТУС", "ЗАКАЗЧИК", "ПОДРАЗД.", "ПОЛУЧАТЕЛЬ", "СУММА", "ВАЛ.", "ИСПОЛНИТЕЛЬ", "СРОК"] %}
+<table id="requests-table">
     <thead>
         <tr>
-            <th>№</th><th>ТИП</th><th>НАЗВАНИЕ</th><th>СТАТУС</th>
-            <th>ЗАКАЗЧИК</th><th>ПОДРАЗД.</th>
-            <th>ПОЛУЧАТЕЛЬ</th><th>СУММА</th><th>ВАЛ.</th>
-            <th>ИСПОЛНИТЕЛЬ</th><th>СРОК</th>
+            {% for label in columns %}
+            <th data-col="{{ loop.index0 }}">
+                <div class="th-head">
+                    <span>{{ label }}</span>
+                    <button type="button" class="filter-btn" onclick="toggleFilterMenu({{ loop.index0 }}, event)" title="Фильтр">⏷</button>
+                </div>
+                <div class="filter-menu" id="filter-menu-{{ loop.index0 }}" onclick="event.stopPropagation()">
+                    <input type="text" class="filter-menu-search" placeholder="Поиск..." oninput="filterMenuSearch({{ loop.index0 }}, this.value)">
+                    <div class="filter-menu-actions">
+                        <a onclick="selectAllInMenu({{ loop.index0 }})">Выбрать все</a>
+                        <a onclick="clearAllInMenu({{ loop.index0 }})">Очистить</a>
+                    </div>
+                    <div class="filter-menu-list"></div>
+                    <div class="filter-menu-buttons">
+                        <button type="button" class="primary" onclick="applyFilter({{ loop.index0 }})">OK</button>
+                        <button type="button" onclick="closeFilterMenu({{ loop.index0 }})">Отмена</button>
+                    </div>
+                </div>
+            </th>
+            {% endfor %}
         </tr>
     </thead>
     <tbody>
         {% for r in requests %}
-        <tr onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
+        <tr data-row onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
             <td><strong>{{ r.number }}</strong></td>
             <td>{{ {"payment": "ПЛАТЁЖ", "purchase": "ЗАКУПКА", "consultation": "КОНСУЛЬТ."}.get(r.type.value, r.type.value) }}</td>
             <td>{{ r.title }}</td>
-            <td><span class="status-pill status-{{ r.status.value }}">{{ status_ru(r.status.value) or r.status.value }}</span></td>
+            <td data-filter-value="{{ status_ru(r.status.value) or r.status.value }}"><span class="status-pill status-{{ r.status.value }}">{{ status_ru(r.status.value) or r.status.value }}</span></td>
             <td>{{ r.requester.full_name if r.requester else r.created_by.full_name }}</td>
             <td>{{ r.division.name }}</td>
             <td>{{ r.payment_details.recipient_name if r.payment_details else "—" }}</td>
@@ -63,5 +85,131 @@ function exportReports(format) {
         }
     }).catch(err => alert('Ошибка сети: ' + err));
 }
+
+// --- Автофильтр по колонкам (как в Excel): чекбокс-список различных значений
+// каждой колонки, построенный из уже отрисованных строк таблицы. Чисто
+// клиентская фильтрация (скрытие строк), без повторных запросов к серверу —
+// список заявок и так загружается целиком за один запрос.
+(function () {
+    var table = document.getElementById('requests-table');
+    if (!table) return;
+    var ths = Array.prototype.slice.call(table.querySelectorAll('thead th[data-col]'));
+    var rows = Array.prototype.slice.call(table.querySelectorAll('tbody tr[data-row]'));
+    var activeFilters = {}; // colIndex (строка) -> Set выбранных значений; колонка без записи — фильтр не применён
+
+    function cellValue(row, col) {
+        var cell = row.children[col];
+        if (!cell) return '';
+        return cell.hasAttribute('data-filter-value') ? cell.getAttribute('data-filter-value') : cell.textContent.trim();
+    }
+
+    function distinctValues(col) {
+        var set = {};
+        rows.forEach(function (r) { set[cellValue(r, col)] = true; });
+        return Object.keys(set).sort(function (a, b) { return a.localeCompare(b, 'ru'); });
+    }
+
+    function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function buildMenu(col) {
+        var menu = document.getElementById('filter-menu-' + col);
+        var list = menu.querySelector('.filter-menu-list');
+        var values = distinctValues(col);
+        var selected = activeFilters[col];
+        list.innerHTML = values.map(function (v) {
+            var checked = !selected || selected.indexOf(v) !== -1;
+            var label = v === '' ? '(пусто)' : escapeHtml(v);
+            return '<label><input type="checkbox" value="' + escapeHtml(v) + '"' + (checked ? ' checked' : '') + '> ' + label + '</label>';
+        }).join('');
+        menu.querySelector('.filter-menu-search').value = '';
+    }
+
+    function closeAllMenus(exceptCol) {
+        document.querySelectorAll('.filter-menu.open').forEach(function (m) {
+            if (exceptCol === undefined || m.id !== 'filter-menu-' + exceptCol) m.classList.remove('open');
+        });
+    }
+
+    document.addEventListener('click', function (e) {
+        if (!e.target.closest('.filter-menu') && !e.target.closest('.filter-btn')) closeAllMenus();
+    });
+
+    window.toggleFilterMenu = function (col, evt) {
+        evt.stopPropagation();
+        var menu = document.getElementById('filter-menu-' + col);
+        var isOpen = menu.classList.contains('open');
+        closeAllMenus();
+        if (!isOpen) {
+            buildMenu(col);
+            menu.classList.add('open');
+        }
+    };
+
+    window.filterMenuSearch = function (col, q) {
+        q = q.trim().toLowerCase();
+        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label').forEach(function (l) {
+            l.style.display = l.textContent.toLowerCase().indexOf(q) !== -1 ? '' : 'none';
+        });
+    };
+
+    window.selectAllInMenu = function (col) {
+        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label:not([style*="display: none"]) input').forEach(function (cb) { cb.checked = true; });
+    };
+
+    window.clearAllInMenu = function (col) {
+        document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list label:not([style*="display: none"]) input').forEach(function (cb) { cb.checked = false; });
+    };
+
+    window.applyFilter = function (col) {
+        var checked = Array.prototype.slice.call(
+            document.querySelectorAll('#filter-menu-' + col + ' .filter-menu-list input:checked')
+        ).map(function (cb) { return cb.value; });
+        var all = distinctValues(col);
+        if (checked.length === all.length) {
+            delete activeFilters[col];
+        } else {
+            activeFilters[col] = checked;
+        }
+        closeAllMenus();
+        updateFilterIcons();
+        applyAllFilters();
+    };
+
+    window.closeFilterMenu = function (col) {
+        document.getElementById('filter-menu-' + col).classList.remove('open');
+    };
+
+    window.resetAllFilters = function () {
+        activeFilters = {};
+        updateFilterIcons();
+        applyAllFilters();
+    };
+
+    function updateFilterIcons() {
+        ths.forEach(function (th) {
+            var col = th.getAttribute('data-col');
+            var btn = th.querySelector('.filter-btn');
+            btn.classList.toggle('active', activeFilters.hasOwnProperty(col));
+        });
+    }
+
+    function applyAllFilters() {
+        var visible = 0;
+        rows.forEach(function (r) {
+            var show = true;
+            for (var col in activeFilters) {
+                if (activeFilters[col].indexOf(cellValue(r, col)) === -1) { show = false; break; }
+            }
+            r.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+        var counter = document.getElementById('filter-count');
+        if (counter) counter.textContent = visible + ' ИЗ ' + rows.length;
+    }
+})();
 </script>
 {% endblock %}
