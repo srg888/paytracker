@@ -20,7 +20,7 @@
       action="{{ ('/requests/' ~ req.id ~ '/edit') if editing else '/requests/new/' ~ req_type }}"
       enctype="multipart/form-data">
 
-    {% if can_pick_requester and not editing %}
+    {% if (can_pick_requester or can_create_as_executor) and not editing %}
     <label>ЗАКАЗЧИК (ЕСЛИ ЗАЯВКА НЕ ОТ СВОЕГО ИМЕНИ)</label>
     <select name="requester_id">
         <option value="">— Свой (текущий пользователь) —</option>

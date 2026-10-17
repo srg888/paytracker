@@ -518,9 +518,6 @@ def new_request_form(request: Request, req_type: str, db: Session = Depends(get_
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
     ctx = _reference_data(db)
@@ -578,9 +575,6 @@ async def create_request(
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    if user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user):
-        flash(request, "Исполнитель не может создавать заявки.", "error")
-        return RedirectResponse("/requests")
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
 
@@ -604,6 +598,11 @@ async def create_request(
         if not requester_user or requester_user.role != UserRole.ZAKAZCHIK or not requester_user.is_active:
             flash(request, "Указанный Заказчик не найден или неактивен.", "error")
             return RedirectResponse(f"/requests/new/{req_type}", status_code=303)
+    # BR-016: Исполнитель может создавать заявку от своего имени
+    # или от имени Заказчика (выбранного в форме).
+    can_create_as_executor = (
+        user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user)
+    )
 
     req = RequestModel(
         number="",
