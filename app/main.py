@@ -590,7 +590,7 @@ async def create_request(
     exp_date = date.fromisoformat(expected_date) if expected_date else None
 
     # BR-015: Руководитель/делегат может создать заявку от имени Заказчика.
-    # BR-016: Исполнитель — тоже (он выбирает Заказчика из списка; сам исполнять будет он).
+    # BR-017: Исполнитель — тоже может создавать заявки и выбирать Заказчика из списка.
     # requester_id из формы берём только если это разрешено и указан реальный пользователь.
     target_requester_id = user.id
     can_pick_requester = user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
