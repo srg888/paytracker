@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ "Редактирование заявки" if editing else "Новая заявка" }} — PayTracker{% endblock %}
+{% block title %}{{ "Редактирование заявки" if editing else "Новая заявка" }} - PayTracker{% endblock %}
 {% block content %}
 
 {% set req_type = req.type.value if editing and req else req_type %}
@@ -28,7 +28,7 @@
         <option value="{{ z.id }}">{{ z.full_name }}</option>
         {% endfor %}
     </select>
-    <p style="font-size:11px;color:#888;margin-top:2px">BR-015: заявка от имени Заказчика. Права подтверждения/ответа на уточнение — у выбранного Заказчика.</p>
+    <p style="font-size:11px;color:#888;margin-top:2px">BR-015: заявка от имени Заказчика. Права подтверждения/ответа на уточнение - у выбранного Заказчика.</p>
     {% endif %}
 
     <label>Название заявки</label>
@@ -138,7 +138,7 @@
     {% endif %}
 
     <h3>Файлы</h3>
-    <p><i>Можно приложить несколько файлов. Лимит на 1 файл — 50 Мб, на все файлы — 500 Мб, максимум 50 файлов.</i></p>
+    <p><i>Можно приложить несколько файлов. Лимит на 1 файл - 50 Мб, на все файлы - 500 Мб, максимум 50 файлов.</i></p>
 
     {% if editing and req.documents %}
     <ul>

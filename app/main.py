@@ -527,6 +527,9 @@ def new_request_form(request: Request, req_type: str, db: Session = Depends(get_
     ctx["can_pick_requester"] = (
         user.role == UserRole.RUKOVODITEL or is_acting_rukovoditel(db, user)
     )
+    ctx["can_create_as_executor"] = (
+        user.role == UserRole.ISPOLNITEL and not is_acting_rukovoditel(db, user)
+    )
     ctx["can_choose_payment_method"] = _can_choose_payment_method(user)
     ctx["current_user"] = user
     return render(request, "request_new.html", db, editing=False, req=None, req_type=req_type, **ctx)
