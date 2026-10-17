@@ -581,7 +581,7 @@ async def create_request(
     if req_type not in _VALID_REQUEST_TYPES:
         return RedirectResponse("/requests/new")
 
-    # BR-130: способ оплаты и агент при платёжной заявке — поле Руководителя/Исполнителя,
+    # BR-016: способ оплаты и агент при платёжной заявке — поле Руководителя/Исполнителя,
     # Заказчик его не выбирает (ни на форме, ни отправкой произвольного значения напрямую).
     can_choose_payment_method = _can_choose_payment_method(user)
 
@@ -681,7 +681,7 @@ async def create_request(
 
 
 def _can_choose_payment_method(user: User) -> bool:
-    """BR-130: способ оплаты (прямой банк / агент) при платёжной заявке выбирают
+    """BR-016: способ оплаты (прямой банк / агент) при платёжной заявке выбирают
     Руководитель и Исполнители — это решение казначейства, а не Заказчика."""
     return user.role in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL)
 
@@ -749,7 +749,7 @@ async def edit_request_submit(
     if err:
         return err
 
-    # BR-130: см. create_request — то же ограничение действует и при редактировании черновика.
+    # BR-016: см. create_request — то же ограничение действует и при редактировании черновика.
     can_choose_payment_method = _can_choose_payment_method(user)
 
     # Аудит изменений полей (BR-071): фиксируем только реально изменившиеся.
