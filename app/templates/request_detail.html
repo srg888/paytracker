@@ -78,10 +78,24 @@
 <div class="card">
     <h3>[ ДЕЙСТВИЯ ]</h3>
 
+    {% if manager_override_edit %}
+    <p style="color:#E61919;font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase">
+        ⚠ Редактирование не своей заявки/не черновика — право Руководителя (BR-018). Каждое изменённое поле будет записано в аудит.
+    </p>
+    {% endif %}
+    {% if can_edit %}
+    <a class="btn secondary" href="/requests/{{ req.id }}/edit">[ {{ "РЕДАКТИРОВАТЬ ЧЕРНОВИК" if can_submit else "РЕДАКТИРОВАТЬ" }} ]</a>
+    {% endif %}
     {% if can_submit %}
-    <a class="btn secondary" href="/requests/{{ req.id }}/edit">[ РЕДАКТИРОВАТЬ ЧЕРНОВИК ]</a>
     <form method="post" action="/requests/{{ req.id }}/submit" style="display:inline">
         <button type="submit">[ ПОДАТЬ ЗАЯВКУ ]</button>
+    </form>
+    {% endif %}
+
+    {% if can_delete %}
+    <form method="post" action="/requests/{{ req.id }}/delete" style="display:inline"
+          onsubmit="return confirm('Удалить заявку {{ req.number }} безвозвратно? Это действие нельзя отменить (запись останется только в аудите).');">
+        <button type="submit" class="danger">[ УДАЛИТЬ ЗАЯВКУ ]</button>
     </form>
     {% endif %}
 
@@ -245,7 +259,7 @@
     {% if not can_submit and not can_assign and not can_reassign and not can_acknowledge_rejection and not can_request_clarification
         and not can_answer_clarification and not can_mark_done and not can_confirm_execution and not can_self_assign
         and not can_propose_terms and not can_accept_terms and not can_reject_terms and not can_send_to_manager
-        and not can_manager_close and not can_rework %}
+        and not can_manager_close and not can_rework and not can_edit and not can_delete %}
     <p><i>НЕТ ДОСТУПНЫХ ДЕЙСТВИЙ.</i></p>
     {% endif %}
 </div>

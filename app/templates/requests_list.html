@@ -9,31 +9,44 @@
     <button onclick="exportReports('xlsx')" class="btn" style="background:#222;color:#fff;">↓ XLSX</button>
 </div>
 
+{% set can_delete_requests = current_user.role.value == "rukovoditel" %}
+
 <div class="filters-toolbar">
     <span>ПОКАЗАНО: <strong id="filter-count">{{ requests|length }} ИЗ {{ requests|length }}</strong></span>
     <button type="button" class="btn-small" onclick="resetAllFilters()">⟲ СБРОСИТЬ ФИЛЬТРЫ</button>
+    {% if can_delete_requests %}
+    <button type="submit" form="bulk-delete-form" class="btn-small danger" id="bulk-delete-btn" disabled
+            onclick="return confirm('Удалить выбранные заявки (' + document.querySelectorAll('.row-select:checked').length + ') безвозвратно? Это действие нельзя отменить (запись останется только в аудите).');">
+        🗑 УДАЛИТЬ ВЫБРАННЫЕ (<span id="selected-count">0</span>)
+    </button>
+    {% endif %}
 </div>
 
+{% set col_offset = 1 if can_delete_requests else 0 %}
 {% set columns = ["№", "ТИП", "НАЗВАНИЕ", "СТАТУС", "ЗАКАЗЧИК", "ПОДРАЗД.", "ПОЛУЧАТЕЛЬ", "СУММА", "ВАЛ.", "ИСПОЛНИТЕЛЬ", "СРОК"] %}
+{% if can_delete_requests %}<form id="bulk-delete-form" method="post" action="/requests/bulk_delete">{% endif %}
 <table id="requests-table">
     <thead>
         <tr>
+            {% if can_delete_requests %}
+            <th style="width:28px"><input type="checkbox" id="select-all-rows" title="Выбрать все"></th>
+            {% endif %}
             {% for label in columns %}
-            <th data-col="{{ loop.index0 }}">
+            <th data-col="{{ loop.index0 + col_offset }}">
                 <div class="th-head">
                     <span>{{ label }}</span>
-                    <button type="button" class="filter-btn" onclick="toggleFilterMenu({{ loop.index0 }}, event)" title="Фильтр">⏷</button>
+                    <button type="button" class="filter-btn" onclick="toggleFilterMenu({{ loop.index0 + col_offset }}, event)" title="Фильтр">⏷</button>
                 </div>
-                <div class="filter-menu" id="filter-menu-{{ loop.index0 }}" onclick="event.stopPropagation()">
-                    <input type="text" class="filter-menu-search" placeholder="Поиск..." oninput="filterMenuSearch({{ loop.index0 }}, this.value)">
+                <div class="filter-menu" id="filter-menu-{{ loop.index0 + col_offset }}" onclick="event.stopPropagation()">
+                    <input type="text" class="filter-menu-search" placeholder="Поиск..." oninput="filterMenuSearch({{ loop.index0 + col_offset }}, this.value)">
                     <div class="filter-menu-actions">
-                        <a onclick="selectAllInMenu({{ loop.index0 }})">Выбрать все</a>
-                        <a onclick="clearAllInMenu({{ loop.index0 }})">Очистить</a>
+                        <a onclick="selectAllInMenu({{ loop.index0 + col_offset }})">Выбрать все</a>
+                        <a onclick="clearAllInMenu({{ loop.index0 + col_offset }})">Очистить</a>
                     </div>
                     <div class="filter-menu-list"></div>
                     <div class="filter-menu-buttons">
-                        <button type="button" class="primary" onclick="applyFilter({{ loop.index0 }})">OK</button>
-                        <button type="button" onclick="closeFilterMenu({{ loop.index0 }})">Отмена</button>
+                        <button type="button" class="primary" onclick="applyFilter({{ loop.index0 + col_offset }})">OK</button>
+                        <button type="button" onclick="closeFilterMenu({{ loop.index0 + col_offset }})">Отмена</button>
                     </div>
                 </div>
             </th>
@@ -43,6 +56,9 @@
     <tbody>
         {% for r in requests %}
         <tr data-row onclick="location.href='/requests/{{ r.id }}'" style="cursor:pointer">
+            {% if can_delete_requests %}
+            <td onclick="event.stopPropagation()"><input type="checkbox" class="row-select" name="ids" value="{{ r.id }}"></td>
+            {% endif %}
             <td><strong>{{ r.number }}</strong></td>
             <td>{{ {"payment": "ПЛАТЁЖ", "purchase": "ЗАКУПКА", "consultation": "КОНСУЛЬТ."}.get(r.type.value, r.type.value) }}</td>
             <td>{{ r.title }}</td>
@@ -56,10 +72,11 @@
             <td>{{ r.expected_date or "—" }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="11">ЗАЯВОК НЕТ.</td></tr>
+        <tr><td colspan="{{ 11 + col_offset }}">ЗАЯВОК НЕТ.</td></tr>
         {% endfor %}
     </tbody>
 </table>
+{% if can_delete_requests %}</form>{% endif %}
 
 <script>
 function exportReports(format) {
@@ -210,6 +227,35 @@ function exportReports(format) {
         var counter = document.getElementById('filter-count');
         if (counter) counter.textContent = visible + ' ИЗ ' + rows.length;
     }
+})();
+
+// --- Массовое удаление заявок (Руководитель, BR-018) ---
+(function () {
+    var selectAll = document.getElementById('select-all-rows');
+    var bulkBtn = document.getElementById('bulk-delete-btn');
+    var countSpan = document.getElementById('selected-count');
+    if (!bulkBtn) return; // не Руководитель — колонки с чекбоксами нет
+
+    function updateBulkUI() {
+        var checked = document.querySelectorAll('.row-select:checked').length;
+        countSpan.textContent = checked;
+        bulkBtn.disabled = checked === 0;
+    }
+
+    if (selectAll) {
+        selectAll.addEventListener('change', function () {
+            document.querySelectorAll('tr[data-row]').forEach(function (row) {
+                if (row.style.display === 'none') return; // скрытые активным фильтром строки не трогаем
+                var cb = row.querySelector('.row-select');
+                if (cb) cb.checked = selectAll.checked;
+            });
+            updateBulkUI();
+        });
+    }
+    document.querySelectorAll('.row-select').forEach(function (cb) {
+        cb.addEventListener('change', updateBulkUI);
+    });
+    updateBulkUI();
 })();
 </script>
 {% endblock %}

@@ -95,6 +95,41 @@ def _audit_field_change(
     )
 
 
+def _audit_request_deletion(db: Session, req: RequestModel, user: User) -> None:
+    """Запись в аудит ДО удаления заявки (BR-018). У audit_log нет FK на requests
+    (намеренно — append-only журнал переживает удаление сущности), поэтому после
+    удаления восстановить контекст по entity_id через join уже нельзя: здесь же
+    дублируем номер/тип/статус/автора/заказчика текстом, чтобы запись аудита
+    осталась самодостаточной и понятной даже после того, как заявки больше нет."""
+    summary = (
+        f"number={req.number}; type={req.type.value}; status={req.status.value}; "
+        f"title={req.title}; "
+        f"created_by={req.created_by.full_name if req.created_by else req.created_by_id}; "
+        f"requester={req.requester.full_name if req.requester else req.requester_id}"
+    )
+    db.add(AuditLog(
+        entity_type="request",
+        entity_id=req.id,
+        user_id=user.id,
+        action_type=AuditActionType.REQUEST_DELETED,
+        old_value=summary,
+        new_value=None,
+    ))
+
+
+def _delete_request_files(req: RequestModel) -> None:
+    """Удалить физические файлы заявки с диска перед удалением строк БД.
+    Каскад ORM (cascade="all, delete-orphan") удалит сами записи RequestDocument,
+    но не трогает файловую систему — без этого при массовом удалении заявок
+    накапливались бы файлы-сироты в /mnt (или настроенном storage-пути)."""
+    for doc in req.documents:
+        if doc.storage_path and os.path.exists(doc.storage_path):
+            try:
+                os.remove(doc.storage_path)
+            except OSError:
+                pass  # не блокируем удаление заявки из-за проблемы с файлом
+
+
 APP_DIR = os.path.dirname(__file__)
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/app/uploads")
 
@@ -418,6 +453,33 @@ def requests_list(request: Request, db: Session = Depends(get_db)):
     return render(request, "requests_list.html", db, requests=requests_)
 
 
+@app.post("/requests/bulk_delete")
+def bulk_delete_requests(request: Request, db: Session = Depends(get_db), ids: list[str] = Form(...)):
+    """BR-018: Руководитель может удалить несколько заявок сразу из списка заявок."""
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse("/requests", status_code=303)
+
+    deleted_numbers: list[str] = []
+    for raw_id in ids:
+        if not raw_id.isdigit():
+            continue
+        req = db.get(RequestModel, int(raw_id))
+        if not req:
+            continue
+        _audit_request_deletion(db, req, user)
+        _delete_request_files(req)
+        deleted_numbers.append(req.number)
+        db.delete(req)
+
+    db.commit()
+    if deleted_numbers:
+        flash(request, f"Удалено заявок: {len(deleted_numbers)} ({', '.join(deleted_numbers)}).")
+    else:
+        flash(request, "Ничего не удалено — отмеченные заявки не найдены.", "error")
+    return RedirectResponse("/requests", status_code=303)
+
+
 # --- Экспорт отчётов (JSON API для кнопок CSV/XLSX в списке заявок) ---
 
 
@@ -693,14 +755,29 @@ def _can_choose_payment_method(user: User) -> bool:
 
 
 def _require_editable_draft(db: Session, request: Request, request_id: int, user: User):
-    """Общая проверка для редактирования: заявка существует, в статусе Черновик,
-    и текущий пользователь — её автор. Возвращает (req, error_redirect_or_None)."""
+    """Общая проверка для редактирования: заявка существует, и либо (а) текущий
+    пользователь — её автор и заявка в статусе Черновик, либо (б) пользователь —
+    Руководитель (BR-018: Руководитель может редактировать любую заявку, в любом
+    статусе, не только свой черновик — каждое изменённое поле пишется в аудит той
+    же механикой `_audit_field_change`, что и обычное редактирование черновика).
+    Возвращает (req, error_redirect_or_None)."""
     req = db.get(RequestModel, request_id)
     if not req:
         return None, RedirectResponse("/requests")
-    if req.created_by_id != user.id or req.status != RequestStatus.DRAFT:
+    is_own_draft = req.created_by_id == user.id and req.status == RequestStatus.DRAFT
+    is_manager_override = user.role == UserRole.RUKOVODITEL
+    if not is_own_draft and not is_manager_override:
         flash(request, "Редактировать можно только собственный черновик.", "error")
         return None, RedirectResponse(f"/requests/{request_id}", status_code=303)
+    if is_manager_override and not is_own_draft:
+        # BR-018: отдельная маркерная запись в аудите — редактирование в обход
+        # обычных прав (не свой черновик), чтобы это было видно одной строкой,
+        # а не только по совокупности отдельных FIELD_CHANGE-записей ниже.
+        db.add(AuditLog(
+            entity_type="request", entity_id=req.id, user_id=user.id,
+            action_type=AuditActionType.MANAGER_EDITED_REQUEST,
+            old_value=f"status={req.status.value}; created_by_id={req.created_by_id}",
+        ))
     return req, None
 
 
@@ -910,7 +987,11 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
     return dict(
         req=req,
         can_submit=is_creator and req.status == RequestStatus.DRAFT,
-        can_edit=is_creator and req.status == RequestStatus.DRAFT,
+        # BR-018: Руководитель может редактировать любую заявку (не только свой черновик).
+        can_edit=(is_creator and req.status == RequestStatus.DRAFT) or user.role == UserRole.RUKOVODITEL,
+        manager_override_edit=user.role == UserRole.RUKOVODITEL and not (is_creator and req.status == RequestStatus.DRAFT),
+        # BR-018: Руководитель может удалить любую заявку (одну или несколько — см. /requests/bulk_delete).
+        can_delete=user.role == UserRole.RUKOVODITEL,
         can_assign=acting_ruk and req.status == RequestStatus.NEW,
         can_reassign=acting_ruk and req.status == RequestStatus.IN_PROGRESS,
         can_self_assign=user.role in (UserRole.ISPOLNITEL, UserRole.RUKOVODITEL) and req.status == RequestStatus.NEW and not is_executor,
@@ -998,6 +1079,24 @@ def _do_transition(request: Request, db: Session, request_id: int, fn, *args):
 @app.post("/requests/{request_id}/submit")
 def action_submit(request: Request, request_id: int, db: Session = Depends(get_db)):
     return _do_transition(request, db, request_id, status_machine.submit)
+
+
+@app.post("/requests/{request_id}/delete")
+def delete_request(request: Request, request_id: int, db: Session = Depends(get_db)):
+    """BR-018: Руководитель может удалить одну заявку (в любом статусе)."""
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse(f"/requests/{request_id}", status_code=303)
+    req = db.get(RequestModel, request_id)
+    if not req:
+        return RedirectResponse("/requests")
+    number = req.number
+    _audit_request_deletion(db, req, user)
+    _delete_request_files(req)
+    db.delete(req)
+    db.commit()
+    flash(request, f"Заявка {number} удалена.")
+    return RedirectResponse("/requests", status_code=303)
 
 
 @app.post("/requests/{request_id}/assign")
