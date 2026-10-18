@@ -75,6 +75,7 @@ class AuditActionType(str, enum.Enum):
     REFERENCE_IMPORTED = "reference_imported"
     REQUEST_DELETED = "request_deleted"
     MANAGER_EDITED_REQUEST = "manager_edited_request"
+    REQUEST_IMPORTED = "request_imported"
 
 
 class ExportFormat(str, enum.Enum):
