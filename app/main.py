@@ -326,6 +326,36 @@ def _static_version(filename: str) -> str:
 
 templates.env.globals["static_version"] = _static_version
 
+
+def _human_size(num_bytes: int) -> str:
+    """Размер в человекочитаемом виде для подсказок в интерфейсе."""
+    mb = num_bytes / (1024 * 1024)
+    if mb >= 1:
+        return f"{mb:g} МБ"
+    return f"{num_bytes / 1024:g} КБ"
+
+
+# Подсказки о лимитах загрузки берутся из тех же констант, что и проверки
+# на сервере, — текст в интерфейсе не может разойтись с реальными правилами.
+templates.env.globals["upload_max_file"] = _human_size(MAX_FILE_SIZE)
+templates.env.globals["upload_max_total"] = _human_size(MAX_TOTAL_SIZE)
+templates.env.globals["upload_max_files"] = MAX_FILES
+
+
+def _formats_hint() -> str:
+    """Перечень допустимых форматов для подсказки: расширения из того же
+    множества, что проверяет сервер, без смысловых дублей (jpg/jpeg)."""
+    exts = [e.lstrip(".").upper() for e in sorted(ALLOWED_FILE_EXTENSIONS)]
+    merged: list[str] = []
+    for ext in exts:
+        if ext == "JPEG" and "JPG" in exts:
+            continue  # показываем как «JPG», не дублируя «JPEG»
+        merged.append(ext)
+    return ", ".join(merged)
+
+
+templates.env.globals["upload_formats"] = _formats_hint()
+
 def render(request: Request, template: str, db: Session, **context):
     current_user = get_current_user(request, db)
     # Доступ к «Отчётам/Аудиту/Настройкам» — Руководитель и Исполнители.

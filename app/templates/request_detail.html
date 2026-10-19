@@ -305,6 +305,7 @@
         </select>
         <label>ФАЙЛ</label>
         <input type="file" name="file" required>
+        <p class="hint-inline">До {{ upload_max_file }} на файл, до {{ upload_max_total }} суммарно, не более {{ upload_max_files }} файлов. Форматы: {{ upload_formats }}.</p>
         <button type="submit">[ ЗАГРУЗИТЬ ]</button>
     </form>
     {% endif %}
@@ -361,6 +362,7 @@
     <form method="post" action="/requests/{{ req.id }}/comments" enctype="multipart/form-data">
         <textarea name="content" rows="2" placeholder="КОММЕНТАРИЙ..." required></textarea>
         <input type="file" name="file" style="margin:8px 0">
+        <p class="hint-inline">До {{ upload_max_file }} на файл. Форматы: {{ upload_formats }}.</p>
         <button type="submit">[ ОТПРАВИТЬ ]</button>
     </form>
 </div>

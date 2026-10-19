@@ -270,6 +270,43 @@ input[type="date"] { font-family: inherit; }
     gap: 0 16px;
 }
 
+/* ---------- подсказки (лимиты загрузки и т.п.) ---------- */
+.hint {
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    background: #f7f7f5;
+    border: 1px solid #e2e2dd;
+    border-left: 3px solid #9a9a93;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #1c1c1a;
+}
+.hint-title {
+    margin: 0 0 6px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #1c1c1a;
+}
+.hint-list {
+    margin: 0;
+    padding-left: 18px;
+    list-style: disc;
+}
+.hint-list li { margin: 2px 0; }
+.hint-list strong { font-weight: 600; }
+.hint-note {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: #6b6b66;
+}
+.hint-inline {
+    margin: 4px 0 10px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #6b6b66;
+}
+
 /* ---------- таблицы ---------- */
 table {
     width: 100%;
