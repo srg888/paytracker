@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ spec.label }} — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/settings/references">&larr; К справочникам</a>
+
+<div class="ref-head">
+    <h2>{{ spec.label }}</h2>
+    <div class="ref-head-actions">
+        <a class="btn secondary" href="/settings/import?reference={{ spec.key }}">CSV</a>
+        <a class="btn" href="/settings/references/{{ spec.key }}/new">+ Добавить</a>
+    </div>
+</div>
+
+{% if rows %}
+<form method="post" action="/settings/references/{{ spec.key }}/bulk_delete" id="ref-bulk-form">
+<table class="ref-table">
+    <thead>
+        <tr>
+            <th class="ref-check"><input type="checkbox" id="ref-check-all" aria-label="Выбрать все"></th>
+            <th>Запись</th>
+            {% for f in spec.fields %}{% if f.name != spec.pk_field %}<th>{{ f.label }}</th>{% endif %}{% endfor %}
+            <th>Использование</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr>
+            <td class="ref-check"><input type="checkbox" name="ids" value="{{ row.pk }}" class="ref-check-box"></td>
+            <td><strong>{{ row.head }}</strong></td>
+            {% for f in spec.fields %}
+                {% if f.name != spec.pk_field %}
+                <td class="{{ 'ref-bool' if f.type == 'bool' }}">{{ row.cells[loop.index0][1] }}</td>
+                {% endif %}
+            {% endfor %}
+            <td class="ref-usage">
+                {% if row.used_in %}
+                    <span class="ref-used">{{ row.used_in }} в {{ spec.usage_label }}</span>
+                {% else %}
+                    <span class="ref-unused">не используется</span>
+                {% endif %}
+            </td>
+            <td class="ref-actions">
+                <a class="ref-edit" href="/settings/references/{{ spec.key }}/{{ row.pk }}/edit" title="Редактировать">&#9998;</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<div class="ref-footer">
+    <label class="ref-select-all"><input type="checkbox" id="ref-check-all-bottom"> Выбрать все</label>
+    <button type="submit" class="btn danger" id="ref-delete-btn" disabled>Удалить (0)</button>
+</div>
+</form>
+
+<p class="ref-hint">
+    Записи, которые используются в заявках, удалить нельзя{% if spec.deactivate_field %}, но можно деактивировать{% endif %} —
+    они перестают предлагаться при создании новых заявок, а исторические данные не страдают.
+</p>
+
+<script>
+(function () {
+    var all = document.getElementById('ref-check-all');
+    var allBottom = document.getElementById('ref-check-all-bottom');
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.ref-check-box'));
+    var btn = document.getElementById('ref-delete-btn');
+
+    function syncState() {
+        var n = boxes.filter(function (b) { return b.checked; }).length;
+        btn.disabled = n === 0;
+        btn.textContent = 'Удалить (' + n + ')';
+        var allChecked = n > 0 && n === boxes.length;
+        if (all) all.checked = allChecked;
+        if (allBottom) allBottom.checked = allChecked;
+    }
+
+    function setAll(value) {
+        boxes.forEach(function (b) { b.checked = value; });
+        syncState();
+    }
+
+    if (all) all.addEventListener('change', function () { setAll(all.checked); });
+    if (allBottom) allBottom.addEventListener('change', function () { setAll(allBottom.checked); });
+    boxes.forEach(function (b) { b.addEventListener('change', syncState); });
+
+    document.getElementById('ref-bulk-form').addEventListener('submit', function (e) {
+        var n = boxes.filter(function (b) { return b.checked; }).length;
+        if (!confirm('Удалить выбранных записей: ' + n + '? Действие необратимо.')) {
+            e.preventDefault();
+        }
+    });
+
+    syncState();
+})();
+</script>
+
+{% else %}
+<div class="card">
+    <p>В справочнике пока нет записей.</p>
+    <p><a class="btn" href="/settings/references/{{ spec.key }}/new">+ Добавить первую запись</a></p>
+</div>
+{% endif %}
+
+{% endblock %}

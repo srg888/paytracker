@@ -617,6 +617,61 @@ th[data-col] .th-label { vertical-align: middle; }
     color: #fff;
 }
 
+/* ---------- администрирование справочников ---------- */
+.ref-list { display: flex; flex-direction: column; gap: 1px; background: #e2e2dd;
+    border: 1px solid #e2e2dd; border-radius: 8px; overflow: hidden; }
+.ref-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px; background: #ffffff; text-decoration: none;
+    border-bottom: none; color: #1c1c1a; transition: background .12s;
+}
+.ref-row:hover { background: #f7f7f5; color: #1c1c1a; border-bottom: none; }
+.ref-row-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.ref-row-title { font-weight: 600; font-size: 14px; }
+.ref-row-desc { font-size: 12px; color: #6b6b66; }
+.ref-row-count {
+    font-family: "JetBrains Mono", monospace; font-size: 12px; color: #6b6b66;
+    background: #f7f7f5; border: 1px solid #e2e2dd; border-radius: 999px;
+    padding: 1px 10px; min-width: 32px; text-align: center;
+}
+.ref-row-arrow { color: #9a9a93; font-size: 14px; }
+
+.ref-head { display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.ref-head h2 { margin: 0; }
+.ref-head-actions { display: flex; gap: 8px; }
+
+.ref-table { font-size: 13px; }
+.ref-table td { vertical-align: middle; }
+.ref-check { width: 36px; text-align: center; }
+.ref-check input { cursor: pointer; }
+.ref-bool { color: #6b6b66; }
+.ref-usage { white-space: nowrap; }
+.ref-used {
+    font-size: 11px; color: #8a6d1f; background: #fdf6e3;
+    border: 1px solid #f0e3bc; border-radius: 999px; padding: 1px 9px;
+}
+.ref-unused { font-size: 11px; color: #9a9a93; }
+.ref-actions { width: 46px; text-align: center; }
+.ref-edit {
+    display: inline-block; width: 26px; height: 26px; line-height: 24px;
+    text-align: center; border: 1px solid #e2e2dd; border-radius: 6px;
+    color: #6b6b66; text-decoration: none; border-bottom: 1px solid #e2e2dd;
+    transition: background .12s, color .12s, border-color .12s;
+}
+.ref-edit:hover { background: #1c1c1a; border-color: #1c1c1a; color: #fff; }
+
+.ref-footer { display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+.ref-select-all { display: flex; align-items: center; gap: 8px; margin: 0;
+    font-size: 12px; color: #6b6b66; cursor: pointer; }
+.ref-hint { font-size: 12px; color: #6b6b66; margin-top: 4px; }
+
+.ref-field-hint { font-size: 11px; color: #9a9a93; margin: 3px 0 0; }
+.ref-checkbox-label { display: flex; align-items: center; gap: 9px; margin: 14px 0 5px;
+    font-size: 13px; color: #1c1c1a; font-weight: 400; cursor: pointer; }
+.ref-form-actions { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+
 /* ---------- адаптив ---------- */
 @media (max-width: 780px) {
     .container { padding: 16px; }

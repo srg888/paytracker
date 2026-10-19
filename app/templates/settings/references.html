@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Справочники — PayTracker{% endblock %}
+{% block content %}
+
+<a href="/settings">&larr; К настройкам</a>
+<h2>// СПРАВОЧНИКИ</h2>
+
+<div class="ref-list">
+    {% for item in items %}
+    <a class="ref-row" href="/settings/references/{{ item.spec.key }}">
+        <span class="ref-row-main">
+            <span class="ref-row-title">{{ item.spec.label }}</span>
+            {% if item.spec.description %}<span class="ref-row-desc">{{ item.spec.description }}</span>{% endif %}
+        </span>
+        <span class="ref-row-count">{{ item.count }}</span>
+        <span class="ref-row-arrow">&rarr;</span>
+    </a>
+    {% endfor %}
+</div>
+
+{% endblock %}

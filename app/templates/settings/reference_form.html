@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ "Редактирование" if obj else "Новая запись" }} — {{ spec.label }}{% endblock %}
+{% block content %}
+
+<a href="/settings/references/{{ spec.key }}">&larr; К справочнику «{{ spec.label }}»</a>
+<h2>{{ "Редактирование записи" if obj else "Новая запись" }}: {{ spec.label }}</h2>
+
+{% if errors %}
+<div class="flash flash-error">
+    {% for e in errors %}<div>&raquo; {{ e }}</div>{% endfor %}
+</div>
+{% endif %}
+
+<form class="card" method="post"
+      action="{{ ('/settings/references/' ~ spec.key ~ '/' ~ obj[spec.pk_field] ~ '/update') if obj else ('/settings/references/' ~ spec.key ~ '/create') }}">
+
+    {% for f in spec.fields %}
+        {% set is_pk = (f.name == spec.pk_field) %}
+        {% set readonly = obj and (is_pk or not f.editable) %}
+        {% set value = form.get(f.name) if form.get(f.name) is not none else '' %}
+
+        {% if f.type == 'bool' %}
+        <label class="ref-checkbox-label">
+            <input type="checkbox" name="{{ f.name }}" value="1" {% if value %}checked{% endif %} {% if readonly %}disabled{% endif %}>
+            <span>{{ f.label }}</span>
+        </label>
+        {% if readonly and value %}<input type="hidden" name="{{ f.name }}" value="1">{% endif %}
+        {% elif f.type == 'enum' %}
+        <label>{{ f.label }}{% if f.required %} *{% endif %}</label>
+        <select name="{{ f.name }}" {% if f.required %}required{% endif %} {% if readonly %}disabled{% endif %}>
+            {% if not f.required %}<option value="">—</option>{% endif %}
+            {% for raw, title in f.choices %}
+            <option value="{{ raw }}" {% if value|string == raw %}selected{% endif %}>{{ title }}</option>
+            {% endfor %}
+        </select>
+        {% else %}
+        <label>{{ f.label }}{% if f.required %} *{% endif %}</label>
+        <input type="text" name="{{ f.name }}" value="{{ value }}"
+               {% if f.max_length %}maxlength="{{ f.max_length }}"{% endif %}
+               {% if f.required %}required{% endif %}
+               {% if readonly %}disabled{% endif %}
+               {% if f.name == spec.pk_field and not obj %}autofocus{% endif %}>
+        {% endif %}
+
+        {% if f.hint %}<p class="ref-field-hint">{{ f.hint }}</p>{% endif %}
+    {% endfor %}
+
+    <div class="ref-form-actions">
+        <button type="submit">{{ "Сохранить изменения" if obj else "Добавить запись" }}</button>
+        <a class="btn secondary" href="/settings/references/{{ spec.key }}">Отмена</a>
+    </div>
+</form>
+
+{% if obj %}
+<form method="post" action="/settings/references/{{ spec.key }}/{{ obj[spec.pk_field] }}/delete"
+      onsubmit="return confirm('Удалить запись? Действие необратимо.');">
+    <button type="submit" class="btn danger">Удалить запись</button>
+</form>
+{% endif %}
+
+{% endblock %}

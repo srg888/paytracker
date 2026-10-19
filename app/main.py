@@ -30,7 +30,7 @@ from app.models.comment import RequestComment
 from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
-from app.services import status_machine, import_refs
+from app.services import status_machine, import_refs, reference_admin as refs
 from app.services.import_refs import ImportError_
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
@@ -1924,6 +1924,246 @@ def settings_view(request: Request, db: Session = Depends(get_db)):
     if not user:
         return RedirectResponse("/requests")
     return render(request, "settings/settings.html", db)
+
+
+# --- Администрирование справочников (vault: «Администрирование справочников») ---
+
+
+def _audit_reference(db: Session, user: User, action, spec, obj, field_name=None,
+                     old_value=None, new_value=None) -> None:
+    """Запись изменения справочника в аудит. entity_id — числовой, поэтому для
+    справочников с текстовым ключом (document_types) кладём 0, а сам ключ
+    сохраняем в field_name — иначе после удаления записи её не опознать."""
+    pk = refs.get_pk_value(spec, obj)
+    try:
+        entity_id = int(pk)
+    except (TypeError, ValueError):
+        entity_id = 0
+        field_name = pk if field_name is None else f"{pk}.{field_name}"
+    db.add(AuditLog(
+        entity_type=f"reference:{spec.key}",
+        entity_id=entity_id,
+        user_id=user.id,
+        action_type=action,
+        field_name=field_name,
+        old_value=old_value,
+        new_value=new_value,
+    ))
+
+
+@app.get("/settings/references")
+def settings_references_list(request: Request, db: Session = Depends(get_db)):
+    """Экран 1: список справочников с количеством записей (без содержимого)."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    items = []
+    for spec in refs.REFERENCE_REGISTRY.values():
+        items.append({
+            "spec": spec,
+            "count": db.query(spec.model).count(),
+        })
+    return render(request, "settings/references.html", db, items=items)
+
+
+@app.get("/settings/references/{key}")
+def settings_reference_view(request: Request, key: str, db: Session = Depends(get_db)):
+    """Экран 2: записи одного справочника + добавление/правка/удаление/CSV."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        flash(request, "Неизвестный справочник.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    objects = refs.list_objects(db, spec)
+    rows = []
+    for obj in objects:
+        rows.append({
+            "obj": obj,
+            "pk": refs.get_pk_value(spec, obj),
+            "head": refs.describe_object(spec, obj),
+            "cells": [(f.label, refs.display_value(obj, f), f.type) for f in spec.fields],
+            "used_in": refs.usage_count(db, spec, obj),
+        })
+    return render(
+        request, "settings/reference_detail.html", db,
+        spec=spec, rows=rows, is_rukovoditel=user.role == UserRole.RUKOVODITEL,
+    )
+
+
+@app.get("/settings/references/{key}/new")
+def settings_reference_new_form(request: Request, key: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+    return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form={}, errors=[])
+
+
+@app.post("/settings/references/{key}/create")
+async def settings_reference_create(request: Request, key: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+    result = refs.validate_form(spec, form, existing=None)
+    errors = list(result.errors) + refs.check_unique(db, spec, result.values, existing=None)
+    if errors:
+        return render(request, "settings/reference_form.html", db,
+                      spec=spec, obj=None, form=form, errors=errors, status_code=400)
+
+    obj = spec.model(**result.values)
+    db.add(obj)
+    try:
+        db.flush()
+    except Exception:
+        db.rollback()
+        return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form=form,
+                      errors=["Не удалось сохранить запись: возможно, значение уже существует."],
+                      status_code=400)
+
+    _audit_reference(db, user, AuditActionType.REFERENCE_CREATED, spec, obj,
+                     new_value=refs.describe_object(spec, obj))
+    db.commit()
+    flash(request, f"Запись «{refs.describe_object(spec, obj)}» добавлена в справочник «{spec.label}».")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+@app.get("/settings/references/{key}/{pk}/edit")
+def settings_reference_edit_form(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+    form = {f.name: refs.field_value(obj, f) for f in spec.fields}
+    return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form, errors=[])
+
+
+@app.post("/settings/references/{key}/{pk}/update")
+async def settings_reference_update(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+    result = refs.validate_form(spec, form, existing=obj)
+    errors = list(result.errors) + refs.check_unique(db, spec, result.values, existing=obj)
+    if errors:
+        return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form,
+                      errors=errors, status_code=400)
+
+    changes = []
+    for name, new_value in result.values.items():
+        old_value = getattr(obj, name)
+        # enum приходит строкой — сравниваем по значению
+        comparable_old = getattr(old_value, "value", old_value)
+        if comparable_old == new_value:
+            continue
+        setattr(obj, name, new_value)
+        changes.append((name, comparable_old, new_value))
+        _audit_reference(db, user, AuditActionType.REFERENCE_UPDATED, spec, obj,
+                         field_name=name, old_value=str(comparable_old), new_value=str(new_value))
+
+    if changes:
+        db.commit()
+        flash(request, f"Запись «{refs.describe_object(spec, obj)}» обновлена (полей изменено: {len(changes)}).")
+    else:
+        flash(request, "Изменений нет.")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+def _delete_reference_object(db: Session, user: User, spec, obj) -> tuple[bool, str]:
+    """Удаление одной записи с защитой от использования. Возвращает (удалено, сообщение)."""
+    used = refs.usage_count(db, spec, obj)
+    name = refs.describe_object(spec, obj)
+    if used:
+        if spec.deactivate_field:
+            setattr(obj, spec.deactivate_field, False)
+            db.commit()
+            return False, (f"«{name}» используется в {used} {spec.usage_label} — удаление запрещено, "
+                           f"запись деактивирована.")
+        return False, f"«{name}» используется в {used} {spec.usage_label} — удаление запрещено."
+    _audit_reference(db, user, AuditActionType.REFERENCE_DELETED, spec, obj,
+                     old_value=refs.describe_object(spec, obj))
+    db.delete(obj)
+    db.commit()
+    return True, f"«{name}» удалено."
+
+
+@app.post("/settings/references/{key}/{pk}/delete")
+def settings_reference_delete(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    deleted, message = _delete_reference_object(db, user, spec, obj)
+    flash(request, message, "info" if deleted else "error")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+@app.post("/settings/references/{key}/bulk_delete")
+async def settings_reference_bulk_delete(request: Request, key: str, db: Session = Depends(get_db)):
+    """Массовое удаление: транзакционно. Занятые записи не удаляются и перечисляются
+    в сообщении (выбран «мягкий» вариант из ТЗ — удалить всё, что можно)."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = await request.form()
+    raw_ids = [v for v in form.getlist("ids") if isinstance(v, str)]
+    deleted, blocked, deactivated = [], [], []
+    for raw in raw_ids:
+        obj = refs.find_object(db, spec, raw)
+        if not obj:
+            continue
+        name = refs.describe_object(spec, obj)
+        used = refs.usage_count(db, spec, obj)
+        if used:
+            if spec.deactivate_field:
+                setattr(obj, spec.deactivate_field, False)
+                deactivated.append(name)
+            else:
+                blocked.append(f"{name} ({used})")
+            continue
+        _audit_reference(db, user, AuditActionType.REFERENCE_DELETED, spec, obj, old_value=name)
+        db.delete(obj)
+        deleted.append(name)
+
+    db.commit()
+    if deleted:
+        flash(request, f"Удалено записей: {len(deleted)} ({', '.join(deleted)}).")
+    if deactivated:
+        flash(request, "Деактивированы (используются в заявках): " + ", ".join(deactivated) + ".", "error")
+    if blocked:
+        flash(request, "Не удалены, так как используются: " + ", ".join(blocked) + ".", "error")
+    if not (deleted or deactivated or blocked):
+        flash(request, "Ничего не выбрано.", "error")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
 
 
 @app.get("/settings/import")
