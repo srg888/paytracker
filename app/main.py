@@ -776,6 +776,13 @@ def _require_editable_draft(db: Session, request: Request, request_id: int, user
     Руководитель (BR-018: Руководитель может редактировать любую заявку, в любом
     статусе, не только свой черновик — каждое изменённое поле пишется в аудит той
     же механикой `_audit_field_change`, что и обычное редактирование черновика).
+
+    Проверка намеренно НЕ пишет в аудит: её вызывает и GET-форма редактирования,
+    а открытие формы сохранением не является. Маркерная запись
+    MANAGER_EDITED_REQUEST делается в самом обработчике сохранения
+    (`edit_request_submit`) через `_audit_manager_override`, если редактирование
+    шло в обход обычных прав.
+
     Возвращает (req, error_redirect_or_None)."""
     req = db.get(RequestModel, request_id)
     if not req:
@@ -785,16 +792,25 @@ def _require_editable_draft(db: Session, request: Request, request_id: int, user
     if not is_own_draft and not is_manager_override:
         flash(request, "Редактировать можно только собственный черновик.", "error")
         return None, RedirectResponse(f"/requests/{request_id}", status_code=303)
-    if is_manager_override and not is_own_draft:
-        # BR-018: отдельная маркерная запись в аудите — редактирование в обход
-        # обычных прав (не свой черновик), чтобы это было видно одной строкой,
-        # а не только по совокупности отдельных FIELD_CHANGE-записей ниже.
-        db.add(AuditLog(
-            entity_type="request", entity_id=req.id, user_id=user.id,
-            action_type=AuditActionType.MANAGER_EDITED_REQUEST,
-            old_value=f"status={req.status.value}; created_by_id={req.created_by_id}",
-        ))
     return req, None
+
+
+def _is_manager_override(db: Session, req: RequestModel, user: User) -> bool:
+    """True, если Руководитель редактирует заявку в обход обычных прав —
+    то есть не свой черновик (BR-018)."""
+    own_draft = req.created_by_id == user.id and req.status == RequestStatus.DRAFT
+    return user.role == UserRole.RUKOVODITEL and not own_draft
+
+
+def _audit_manager_override(db: Session, req: RequestModel, user: User) -> None:
+    """BR-018: маркерная запись в аудите — редактирование в обход обычных прав
+    (не свой черновик). Пишется только при фактическом сохранении, чтобы это было
+    видно одной строкой, а не только по совокупности отдельных FIELD_CHANGE."""
+    db.add(AuditLog(
+        entity_type="request", entity_id=req.id, user_id=user.id,
+        action_type=AuditActionType.MANAGER_EDITED_REQUEST,
+        old_value=f"status={req.status.value}; created_by_id={req.created_by_id}",
+    ))
 
 
 @app.get("/requests/{request_id}/edit")
@@ -847,6 +863,11 @@ async def edit_request_submit(
     req, err = _require_editable_draft(db, request, request_id, user)
     if err:
         return err
+
+    # BR-018: редактирование Руководителем в обход обычных прав — маркерная запись
+    # в аудите. Делается здесь (а не в _require_editable_draft), потому что та же
+    # проверка используется GET-формой: открытие формы сохранением не является.
+    manager_override = _is_manager_override(db, req, user)
 
     # BR-016: см. create_request — то же ограничение действует и при редактировании черновика.
     can_choose_payment_method = _can_choose_payment_method(user)
@@ -927,6 +948,9 @@ async def edit_request_submit(
     warnings = await _save_generic_attachments(
         db, req.id, files, user.id, existing_count=existing_count, existing_total_size=existing_total_size
     )
+
+    if manager_override:
+        _audit_manager_override(db, req, user)
 
     db.commit()
     flash(request, "Черновик обновлён.")
