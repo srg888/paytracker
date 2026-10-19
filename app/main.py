@@ -2167,11 +2167,14 @@ async def settings_reference_bulk_delete(request: Request, key: str, db: Session
 
 
 @app.get("/settings/import")
-def settings_import_view(request: Request, db: Session = Depends(get_db)):
+def settings_import_view(request: Request, db: Session = Depends(get_db), reference: str = ""):
+    """Импорт CSV. Параметр ?reference=<ключ> предвыбирает справочник — по этой
+    ссылке приходит кнопка «CSV» со страницы конкретного справочника."""
     user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
-    return render(request, "settings/import.html", db)
+    preselected = reference if reference in import_refs.IMPORTERS else ""
+    return render(request, "settings/import.html", db, preselected=preselected)
 
 
 @app.post("/settings/import")

@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session
 from app.models.agent import Agent
 from app.models.buyer_company import BuyerCompany
 from app.models.currency import Currency, ExchangeRate
+from app.models.document_type import DocumentType
+from app.models.division import Division
+from app.models.enums import DocumentCategory
 
 
 class ImportError_(Exception):
@@ -144,8 +147,91 @@ def import_exchange_rates(db: Session, file: BinaryIO) -> dict:
     return {"added": added, "updated": updated, "skipped": skipped}
 
 
+
+def import_divisions(db: Session, file: BinaryIO) -> dict:
+    """Импорт подразделений (юрлиц) из CSV: name.
+
+    Ключ — название: по нему заводится новая запись или обновляется существующая
+    (у подразделения, кроме названия, полей нет, поэтому «обновление» — это no-op,
+    но такой импорт полезен для массовой загрузки списка).
+    """
+    text = file.read().decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or "name" not in reader.fieldnames:
+        raise ImportError_("CSV должен содержать колонку 'name'.")
+
+    added = updated = skipped = 0
+    for row in reader:
+        name = (row.get("name") or "").strip()
+        if not name:
+            skipped += 1
+            continue
+        existing = db.query(Division).filter(Division.name == name).first()
+        if existing:
+            updated += 1
+        else:
+            db.add(Division(name=name))
+            added += 1
+    db.commit()
+    return {"added": added, "updated": updated, "skipped": skipped}
+
+
+def import_document_types(db: Session, file: BinaryIO) -> dict:
+    """Импорт типов документов из CSV: code,name,category,is_required_default,recipient_service.
+
+    code — первичный ключ и колонка поиска. category принимает значения
+    purchase / payment_agent / payment_bank (либо их русские подписи).
+    """
+    text = file.read().decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"code", "name", "category"}
+    if not reader.fieldnames or not required.issubset(reader.fieldnames):
+        raise ImportError_("CSV должен содержать колонки: code, name, category.")
+
+    categories = {c.value: c for c in DocumentCategory}
+    ru_categories = {
+        "закупка": DocumentCategory.PURCHASE,
+        "платёж через агента": DocumentCategory.PAYMENT_AGENT,
+        "платеж через агента": DocumentCategory.PAYMENT_AGENT,
+        "платёж через банк": DocumentCategory.PAYMENT_BANK,
+        "платеж через банк": DocumentCategory.PAYMENT_BANK,
+    }
+
+    added = updated = skipped = 0
+    for row in reader:
+        code = (row.get("code") or "").strip()
+        name = (row.get("name") or "").strip()
+        category_raw = (row.get("category") or "").strip()
+        if not code or not name:
+            skipped += 1
+            continue
+        category = categories.get(category_raw.lower()) or ru_categories.get(category_raw.lower())
+        if category is None:
+            skipped += 1
+            continue
+
+        kwargs = {"name": name, "category": category}
+        if row.get("is_required_default"):
+            kwargs["is_required_default"] = _parse_bool(row["is_required_default"])
+        if row.get("recipient_service") is not None:
+            kwargs["recipient_service"] = row["recipient_service"].strip() or None
+
+        existing = db.query(DocumentType).filter(DocumentType.code == code).first()
+        if existing:
+            for key, value in kwargs.items():
+                setattr(existing, key, value)
+            updated += 1
+        else:
+            db.add(DocumentType(code=code, **kwargs))
+            added += 1
+    db.commit()
+    return {"added": added, "updated": updated, "skipped": skipped}
+
+
 IMPORTERS = {
     "agents": import_agents,
     "buyer_companies": import_buyer_companies,
     "exchange_rates": import_exchange_rates,
+    "divisions": import_divisions,
+    "document_types": import_document_types,
 }

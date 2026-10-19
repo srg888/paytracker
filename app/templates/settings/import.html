@@ -8,9 +8,15 @@
 <form class="card" method="post" action="/settings/import" enctype="multipart/form-data">
     <label>СПРАВОЧНИК</label>
     <select name="reference" required>
-        <option value="agents">Агенты</option>
-        <option value="buyer_companies">Компании-покупатели</option>
-        <option value="exchange_rates">Курсы валют</option>
+        {% for key, title in [
+            ("agents", "Платёжные агенты"),
+            ("buyer_companies", "Компании-покупатели"),
+            ("divisions", "Подразделения"),
+            ("document_types", "Типы документов"),
+            ("exchange_rates", "Курсы валют"),
+        ] %}
+        <option value="{{ key }}" {% if preselected == key %}selected{% endif %}>{{ title }}</option>
+        {% endfor %}
     </select>
     <label>ФАЙЛ CSV</label>
     <input type="file" name="file" accept=".csv,text/csv" required>
@@ -19,12 +25,22 @@
 
 <div class="card">
     <h3>[ Формат файла ]</h3>
-    <p style="font-size:13px"><strong>Агенты:</strong> <code>code,name,is_resident,is_active,is_own_company</code><br>
+    <p style="font-size:13px"><strong>Платёжные агенты:</strong> <code>code,name,is_resident,is_active,is_own_company</code><br>
         пример: <code>АП,Альфа Пэй,,true,false</code> (код — ключ; существующие обновляются)</p>
     <p style="font-size:13px"><strong>Компании-покупатели:</strong> <code>name,is_active</code><br>
         пример: <code>МастерТрейд,true</code></p>
+    <p style="font-size:13px"><strong>Подразделения:</strong> <code>name</code><br>
+        пример: <code>Дирекция закупок</code></p>
+    <p style="font-size:13px"><strong>Типы документов:</strong> <code>code,name,category,is_required_default,recipient_service</code><br>
+        пример: <code>ЗКП-09,Акт сверки,purchase,true,Бухгалтерия</code><br>
+        <span style="color:#888">category: <code>purchase</code> | <code>payment_agent</code> | <code>payment_bank</code>
+        (можно по-русски: «Закупка», «Платёж через агента», «Платёж через банк»)</span></p>
     <p style="font-size:13px"><strong>Курсы валют:</strong> <code>currency,date,rate</code><br>
         пример: <code>USD,2026-10-16,93.76</code> (код валюты должен существовать)</p>
+    <p class="ref-hint" style="margin-top:12px">
+        Импорт добавляет новые записи и обновляет существующие по ключу, но никогда не удаляет:
+        удаление — только вручную на странице справочника.
+    </p>
 </div>
 
 {% endblock %}
