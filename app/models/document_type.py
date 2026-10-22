@@ -18,3 +18,6 @@ class DocumentType(Base):
     is_required_default: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # BR-123: внутренняя служба-получатель документа (бухгалтерия, валютный контроль и т.п.)
     recipient_service: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Вывод из оборота: тип остаётся в истории и в уже поданных заявках,
+    # но не предлагается для новых загрузок и не попадает в новые чек-листы.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

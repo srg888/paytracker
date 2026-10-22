@@ -617,12 +617,25 @@ def api_report_list(payload: ReportListPayload, request: Request, db: Session = 
     return JSONResponse({"download_url": f"/uploads/reports/{filename}"})
 
 
-def _reference_data(db: Session) -> dict:
+def _reference_data(db: Session, include_inactive: bool = False) -> dict:
+    """Справочники для выпадающих списков формы заявки.
+
+    include_inactive=True — при редактировании существующей заявки: там нужно
+    видеть и деактивированные записи, иначе текущее значение «потеряется»
+    из списка и при сохранении подменится первым активным.
+    """
+    divisions_q = db.query(Division)
+    currencies_q = db.query(Currency)
+    buyer_q = db.query(BuyerCompany)
+    if not include_inactive:
+        divisions_q = divisions_q.filter(Division.is_active.is_(True))
+        currencies_q = currencies_q.filter(Currency.is_active.is_(True))
+        buyer_q = buyer_q.filter(BuyerCompany.is_active.is_(True))
     return dict(
-        divisions=db.query(Division).all(),
-        currencies=db.query(Currency).all(),
+        divisions=divisions_q.all(),
+        currencies=currencies_q.all(),
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
-        buyer_companies=db.query(BuyerCompany).filter(BuyerCompany.is_active.is_(True)).all(),
+        buyer_companies=buyer_q.all(),
         zakazchiki=db.query(User).filter(
             User.role == UserRole.ZAKAZCHIK, User.is_active.is_(True)
         ).order_by(User.full_name).all(),
@@ -868,7 +881,7 @@ def edit_request_form(request: Request, request_id: int, db: Session = Depends(g
     return render(
         request, "request_new.html", db, editing=True, req=req,
         can_choose_payment_method=_can_choose_payment_method(user),
-        **_reference_data(db),
+        **_reference_data(db, include_inactive=True),
     )
 
 
@@ -1115,7 +1128,7 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
             )
         },
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
-        currencies=db.query(Currency).all(),
+        currencies=db.query(Currency).filter(Currency.is_active.is_(True)).all(),
     )
 
 

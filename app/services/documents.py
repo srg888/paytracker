@@ -26,7 +26,11 @@ def missing_required_documents(db: Session, req: Request) -> list[DocumentType]:
     if category is None:
         return []
 
-    all_types = db.query(DocumentType).filter(DocumentType.category == category).all()
+    all_types = (
+        db.query(DocumentType)
+        .filter(DocumentType.category == category, DocumentType.is_active.is_(True))
+        .all()
+    )
     overrides = {
         o.document_type_code: o.is_required_override
         for o in db.query(RequestDocumentRequirement).filter(
@@ -54,7 +58,10 @@ def available_document_types(db: Session, req: Request) -> list[DocumentType]:
     if category is None:
         return []
     return [
-        dt for dt in db.query(DocumentType).filter(DocumentType.category == category).all()
+        dt
+        for dt in db.query(DocumentType)
+        .filter(DocumentType.category == category, DocumentType.is_active.is_(True))
+        .all()
         if _applicable_for_route(dt, req)
     ]
 

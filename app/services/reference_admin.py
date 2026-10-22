@@ -150,9 +150,11 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
         order_by="name",
         fields=[
             ReferenceField("name", "Название", "str", required=True, max_length=255),
+            ReferenceField("is_active", "Активно", "bool"),
         ],
         usage_check=_count_requests_by("request", division_id="id"),
         usage_label="заявках",
+        deactivate_field="is_active",
     ),
     "currencies": ReferenceSpec(
         key="currencies",
@@ -164,9 +166,11 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
         fields=[
             ReferenceField("code", "Код ISO 4217", "str", required=True, max_length=3,
                            hint="Три латинские буквы: USD, EUR, CNY"),
+            ReferenceField("is_active", "Активна", "bool"),
         ],
         usage_check=_currency_usage,
         usage_label="заявках и курсах",
+        deactivate_field="is_active",
     ),
     "buyer_companies": ReferenceSpec(
         key="buyer_companies",
@@ -221,9 +225,11 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             ]),
             ReferenceField("is_required_default", "Обязателен по умолчанию", "bool"),
             ReferenceField("recipient_service", "Служба-получатель", "str", max_length=128),
+            ReferenceField("is_active", "Активен", "bool"),
         ],
         usage_check=_document_type_usage,
         usage_label="документах и требованиях",
+        deactivate_field="is_active",
     ),
 }
 
