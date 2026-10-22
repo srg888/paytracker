@@ -1132,12 +1132,44 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
     )
 
 
+def _load_request_for_detail(db: Session, request_id: int):
+    """Заявка со всеми связями, которые читает карточка (request_detail.html).
+
+    Без этого каждая связь (requester, division, executor, payment_details.currency,
+    agent, subagent, executions, status_history, comments, documents, purchase_details
+    .buyer_company) грузится отдельным SELECT — на одну карточку уходило 14–19
+    запросов вместо одного.
+    """
+    return (
+        db.query(RequestModel)
+        .options(
+            joinedload(RequestModel.requester),
+            joinedload(RequestModel.created_by),
+            joinedload(RequestModel.division),
+            joinedload(RequestModel.executor),
+            joinedload(RequestModel.status_history),
+            joinedload(RequestModel.comments),
+            joinedload(RequestModel.documents),
+            joinedload(RequestModel.document_requirements),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.currency),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.agent),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.subagent),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.executions),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.terms_proposals),
+            joinedload(RequestModel.purchase_details).joinedload(PurchaseRequest.buyer_company),
+            joinedload(RequestModel.consultation_details),
+        )
+        .filter(RequestModel.id == request_id)
+        .first()
+    )
+
+
 @app.get("/requests/{request_id}")
 def request_detail(request: Request, request_id: int, db: Session = Depends(get_db)):
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    req = db.get(RequestModel, request_id)
+    req = _load_request_for_detail(db, request_id)
     if not req:
         return RedirectResponse("/requests")
     ctx = _build_detail_context(request, db, req, user)
