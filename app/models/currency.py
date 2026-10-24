@@ -15,6 +15,8 @@ class Currency(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(3), unique=True, nullable=False)  # ISO 4217: USD, EUR, ...
+    # Вывод из оборота: валюта остаётся в истории, но не предлагается при создании новых заявок
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     exchange_rates: Mapped[list["ExchangeRate"]] = relationship(back_populates="currency")
 

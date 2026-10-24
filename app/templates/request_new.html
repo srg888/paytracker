@@ -138,7 +138,15 @@
     {% endif %}
 
     <h3>Файлы</h3>
-    <p><i>Можно приложить несколько файлов. Лимит на 1 файл - 50 Мб, на все файлы - 500 Мб, максимум 50 файлов.</i></p>
+    <div class="hint">
+        <p class="hint-title">Можно приложить несколько файлов</p>
+        <ul class="hint-list">
+            <li><strong>Размер:</strong> до {{ upload_max_file }} на файл, до {{ upload_max_total }} суммарно</li>
+            <li><strong>Количество:</strong> не более {{ upload_max_files }} файлов</li>
+            <li><strong>Форматы:</strong> {{ upload_formats }}</li>
+        </ul>
+        <p class="hint-note">Файл другого формата или большего размера не загрузится — сервер проверит его содержимое, а не только расширение.</p>
+    </div>
 
     {% if editing and req.documents %}
     <ul>

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.db.session import get_db
@@ -30,7 +30,7 @@ from app.models.comment import RequestComment
 from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
-from app.services import status_machine, import_refs
+from app.services import status_machine, import_refs, reference_admin as refs
 from app.services.import_refs import ImportError_
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
@@ -326,6 +326,36 @@ def _static_version(filename: str) -> str:
 
 templates.env.globals["static_version"] = _static_version
 
+
+def _human_size(num_bytes: int) -> str:
+    """Размер в человекочитаемом виде для подсказок в интерфейсе."""
+    mb = num_bytes / (1024 * 1024)
+    if mb >= 1:
+        return f"{mb:g} МБ"
+    return f"{num_bytes / 1024:g} КБ"
+
+
+# Подсказки о лимитах загрузки берутся из тех же констант, что и проверки
+# на сервере, — текст в интерфейсе не может разойтись с реальными правилами.
+templates.env.globals["upload_max_file"] = _human_size(MAX_FILE_SIZE)
+templates.env.globals["upload_max_total"] = _human_size(MAX_TOTAL_SIZE)
+templates.env.globals["upload_max_files"] = MAX_FILES
+
+
+def _formats_hint() -> str:
+    """Перечень допустимых форматов для подсказки: расширения из того же
+    множества, что проверяет сервер, без смысловых дублей (jpg/jpeg)."""
+    exts = [e.lstrip(".").upper() for e in sorted(ALLOWED_FILE_EXTENSIONS)]
+    merged: list[str] = []
+    for ext in exts:
+        if ext == "JPEG" and "JPG" in exts:
+            continue  # показываем как «JPG», не дублируя «JPEG»
+        merged.append(ext)
+    return ", ".join(merged)
+
+
+templates.env.globals["upload_formats"] = _formats_hint()
+
 def render(request: Request, template: str, db: Session, **context):
     current_user = get_current_user(request, db)
     # Доступ к «Отчётам/Аудиту/Настройкам» — Руководитель и Исполнители.
@@ -462,7 +492,21 @@ def requests_list(request: Request, db: Session = Depends(get_db)):
     if not user:
         return RedirectResponse("/login")
 
-    query = db.query(RequestModel)
+    # Список целиком отдаётся браузеру (без пагинации), поэтому связи грузим
+    # одним запросом: иначе каждая строка делает свои SELECT и получается N+1
+    # (замеры: 1000 заявок — 1007 запросов и 946 мс против 1 запроса и 122 мс).
+    # При переходе на серверную пагинацию фильтрацию нужно будет перенести на
+    # сервер — см. ADR-008.
+    query = (
+        db.query(RequestModel)
+        .options(
+            joinedload(RequestModel.requester),
+            joinedload(RequestModel.created_by),
+            joinedload(RequestModel.division),
+            joinedload(RequestModel.executor),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.currency),
+        )
+    )
     if user.role == UserRole.ZAKAZCHIK:
         query = query.filter(RequestModel.requester_id == user.id)
     requests_ = query.order_by(RequestModel.id.desc()).all()
@@ -573,12 +617,25 @@ def api_report_list(payload: ReportListPayload, request: Request, db: Session = 
     return JSONResponse({"download_url": f"/uploads/reports/{filename}"})
 
 
-def _reference_data(db: Session) -> dict:
+def _reference_data(db: Session, include_inactive: bool = False) -> dict:
+    """Справочники для выпадающих списков формы заявки.
+
+    include_inactive=True — при редактировании существующей заявки: там нужно
+    видеть и деактивированные записи, иначе текущее значение «потеряется»
+    из списка и при сохранении подменится первым активным.
+    """
+    divisions_q = db.query(Division)
+    currencies_q = db.query(Currency)
+    buyer_q = db.query(BuyerCompany)
+    if not include_inactive:
+        divisions_q = divisions_q.filter(Division.is_active.is_(True))
+        currencies_q = currencies_q.filter(Currency.is_active.is_(True))
+        buyer_q = buyer_q.filter(BuyerCompany.is_active.is_(True))
     return dict(
-        divisions=db.query(Division).all(),
-        currencies=db.query(Currency).all(),
+        divisions=divisions_q.all(),
+        currencies=currencies_q.all(),
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
-        buyer_companies=db.query(BuyerCompany).filter(BuyerCompany.is_active.is_(True)).all(),
+        buyer_companies=buyer_q.all(),
         zakazchiki=db.query(User).filter(
             User.role == UserRole.ZAKAZCHIK, User.is_active.is_(True)
         ).order_by(User.full_name).all(),
@@ -776,6 +833,13 @@ def _require_editable_draft(db: Session, request: Request, request_id: int, user
     Руководитель (BR-018: Руководитель может редактировать любую заявку, в любом
     статусе, не только свой черновик — каждое изменённое поле пишется в аудит той
     же механикой `_audit_field_change`, что и обычное редактирование черновика).
+
+    Проверка намеренно НЕ пишет в аудит: её вызывает и GET-форма редактирования,
+    а открытие формы сохранением не является. Маркерная запись
+    MANAGER_EDITED_REQUEST делается в самом обработчике сохранения
+    (`edit_request_submit`) через `_audit_manager_override`, если редактирование
+    шло в обход обычных прав.
+
     Возвращает (req, error_redirect_or_None)."""
     req = db.get(RequestModel, request_id)
     if not req:
@@ -785,16 +849,25 @@ def _require_editable_draft(db: Session, request: Request, request_id: int, user
     if not is_own_draft and not is_manager_override:
         flash(request, "Редактировать можно только собственный черновик.", "error")
         return None, RedirectResponse(f"/requests/{request_id}", status_code=303)
-    if is_manager_override and not is_own_draft:
-        # BR-018: отдельная маркерная запись в аудите — редактирование в обход
-        # обычных прав (не свой черновик), чтобы это было видно одной строкой,
-        # а не только по совокупности отдельных FIELD_CHANGE-записей ниже.
-        db.add(AuditLog(
-            entity_type="request", entity_id=req.id, user_id=user.id,
-            action_type=AuditActionType.MANAGER_EDITED_REQUEST,
-            old_value=f"status={req.status.value}; created_by_id={req.created_by_id}",
-        ))
     return req, None
+
+
+def _is_manager_override(db: Session, req: RequestModel, user: User) -> bool:
+    """True, если Руководитель редактирует заявку в обход обычных прав —
+    то есть не свой черновик (BR-018)."""
+    own_draft = req.created_by_id == user.id and req.status == RequestStatus.DRAFT
+    return user.role == UserRole.RUKOVODITEL and not own_draft
+
+
+def _audit_manager_override(db: Session, req: RequestModel, user: User) -> None:
+    """BR-018: маркерная запись в аудите — редактирование в обход обычных прав
+    (не свой черновик). Пишется только при фактическом сохранении, чтобы это было
+    видно одной строкой, а не только по совокупности отдельных FIELD_CHANGE."""
+    db.add(AuditLog(
+        entity_type="request", entity_id=req.id, user_id=user.id,
+        action_type=AuditActionType.MANAGER_EDITED_REQUEST,
+        old_value=f"status={req.status.value}; created_by_id={req.created_by_id}",
+    ))
 
 
 @app.get("/requests/{request_id}/edit")
@@ -808,7 +881,7 @@ def edit_request_form(request: Request, request_id: int, db: Session = Depends(g
     return render(
         request, "request_new.html", db, editing=True, req=req,
         can_choose_payment_method=_can_choose_payment_method(user),
-        **_reference_data(db),
+        **_reference_data(db, include_inactive=True),
     )
 
 
@@ -847,6 +920,11 @@ async def edit_request_submit(
     req, err = _require_editable_draft(db, request, request_id, user)
     if err:
         return err
+
+    # BR-018: редактирование Руководителем в обход обычных прав — маркерная запись
+    # в аудите. Делается здесь (а не в _require_editable_draft), потому что та же
+    # проверка используется GET-формой: открытие формы сохранением не является.
+    manager_override = _is_manager_override(db, req, user)
 
     # BR-016: см. create_request — то же ограничение действует и при редактировании черновика.
     can_choose_payment_method = _can_choose_payment_method(user)
@@ -927,6 +1005,9 @@ async def edit_request_submit(
     warnings = await _save_generic_attachments(
         db, req.id, files, user.id, existing_count=existing_count, existing_total_size=existing_total_size
     )
+
+    if manager_override:
+        _audit_manager_override(db, req, user)
 
     db.commit()
     flash(request, "Черновик обновлён.")
@@ -1047,7 +1128,39 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
             )
         },
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
-        currencies=db.query(Currency).all(),
+        currencies=db.query(Currency).filter(Currency.is_active.is_(True)).all(),
+    )
+
+
+def _load_request_for_detail(db: Session, request_id: int):
+    """Заявка со всеми связями, которые читает карточка (request_detail.html).
+
+    Без этого каждая связь (requester, division, executor, payment_details.currency,
+    agent, subagent, executions, status_history, comments, documents, purchase_details
+    .buyer_company) грузится отдельным SELECT — на одну карточку уходило 14–19
+    запросов вместо одного.
+    """
+    return (
+        db.query(RequestModel)
+        .options(
+            joinedload(RequestModel.requester),
+            joinedload(RequestModel.created_by),
+            joinedload(RequestModel.division),
+            joinedload(RequestModel.executor),
+            joinedload(RequestModel.status_history),
+            joinedload(RequestModel.comments),
+            joinedload(RequestModel.documents),
+            joinedload(RequestModel.document_requirements),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.currency),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.agent),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.subagent),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.executions),
+            joinedload(RequestModel.payment_details).joinedload(PaymentRequest.terms_proposals),
+            joinedload(RequestModel.purchase_details).joinedload(PurchaseRequest.buyer_company),
+            joinedload(RequestModel.consultation_details),
+        )
+        .filter(RequestModel.id == request_id)
+        .first()
     )
 
 
@@ -1056,7 +1169,7 @@ def request_detail(request: Request, request_id: int, db: Session = Depends(get_
     user = require_login(request, db)
     if not user:
         return RedirectResponse("/login")
-    req = db.get(RequestModel, request_id)
+    req = _load_request_for_detail(db, request_id)
     if not req:
         return RedirectResponse("/requests")
     ctx = _build_detail_context(request, db, req, user)
@@ -1872,12 +1985,255 @@ def settings_view(request: Request, db: Session = Depends(get_db)):
     return render(request, "settings/settings.html", db)
 
 
-@app.get("/settings/import")
-def settings_import_view(request: Request, db: Session = Depends(get_db)):
+# --- Администрирование справочников (vault: «Администрирование справочников») ---
+
+
+def _audit_reference(db: Session, user: User, action, spec, obj, field_name=None,
+                     old_value=None, new_value=None) -> None:
+    """Запись изменения справочника в аудит. entity_id — числовой, поэтому для
+    справочников с текстовым ключом (document_types) кладём 0, а сам ключ
+    сохраняем в field_name — иначе после удаления записи её не опознать."""
+    pk = refs.get_pk_value(spec, obj)
+    try:
+        entity_id = int(pk)
+    except (TypeError, ValueError):
+        entity_id = 0
+        field_name = pk if field_name is None else f"{pk}.{field_name}"
+    db.add(AuditLog(
+        entity_type=f"reference:{spec.key}",
+        entity_id=entity_id,
+        user_id=user.id,
+        action_type=action,
+        field_name=field_name,
+        old_value=old_value,
+        new_value=new_value,
+    ))
+
+
+@app.get("/settings/references")
+def settings_references_list(request: Request, db: Session = Depends(get_db)):
+    """Экран 1: список справочников с количеством записей (без содержимого)."""
     user = _require_analytics_access(request, db)
     if not user:
         return RedirectResponse("/requests")
-    return render(request, "settings/import.html", db)
+    items = []
+    for spec in refs.REFERENCE_REGISTRY.values():
+        items.append({
+            "spec": spec,
+            "count": db.query(spec.model).count(),
+        })
+    return render(request, "settings/references.html", db, items=items)
+
+
+@app.get("/settings/references/{key}")
+def settings_reference_view(request: Request, key: str, db: Session = Depends(get_db)):
+    """Экран 2: записи одного справочника + добавление/правка/удаление/CSV."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        flash(request, "Неизвестный справочник.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    objects = refs.list_objects(db, spec)
+    rows = []
+    for obj in objects:
+        rows.append({
+            "obj": obj,
+            "pk": refs.get_pk_value(spec, obj),
+            "head": refs.describe_object(spec, obj),
+            "cells": [(f.label, refs.display_value(obj, f), f.type) for f in spec.fields],
+            "used_in": refs.usage_count(db, spec, obj),
+        })
+    return render(
+        request, "settings/reference_detail.html", db,
+        spec=spec, rows=rows, is_rukovoditel=user.role == UserRole.RUKOVODITEL,
+    )
+
+
+@app.get("/settings/references/{key}/new")
+def settings_reference_new_form(request: Request, key: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+    return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form={}, errors=[])
+
+
+@app.post("/settings/references/{key}/create")
+async def settings_reference_create(request: Request, key: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+    result = refs.validate_form(spec, form, existing=None)
+    errors = list(result.errors) + refs.check_unique(db, spec, result.values, existing=None)
+    if errors:
+        return render(request, "settings/reference_form.html", db,
+                      spec=spec, obj=None, form=form, errors=errors, status_code=400)
+
+    obj = spec.model(**result.values)
+    db.add(obj)
+    try:
+        db.flush()
+    except Exception:
+        db.rollback()
+        return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form=form,
+                      errors=["Не удалось сохранить запись: возможно, значение уже существует."],
+                      status_code=400)
+
+    _audit_reference(db, user, AuditActionType.REFERENCE_CREATED, spec, obj,
+                     new_value=refs.describe_object(spec, obj))
+    db.commit()
+    flash(request, f"Запись «{refs.describe_object(spec, obj)}» добавлена в справочник «{spec.label}».")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+@app.get("/settings/references/{key}/{pk}/edit")
+def settings_reference_edit_form(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+    form = {f.name: refs.field_value(obj, f) for f in spec.fields}
+    return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form, errors=[])
+
+
+@app.post("/settings/references/{key}/{pk}/update")
+async def settings_reference_update(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
+    result = refs.validate_form(spec, form, existing=obj)
+    errors = list(result.errors) + refs.check_unique(db, spec, result.values, existing=obj)
+    if errors:
+        return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form,
+                      errors=errors, status_code=400)
+
+    changes = []
+    for name, new_value in result.values.items():
+        old_value = getattr(obj, name)
+        # enum приходит строкой — сравниваем по значению
+        comparable_old = getattr(old_value, "value", old_value)
+        if comparable_old == new_value:
+            continue
+        setattr(obj, name, new_value)
+        changes.append((name, comparable_old, new_value))
+        _audit_reference(db, user, AuditActionType.REFERENCE_UPDATED, spec, obj,
+                         field_name=name, old_value=str(comparable_old), new_value=str(new_value))
+
+    if changes:
+        db.commit()
+        flash(request, f"Запись «{refs.describe_object(spec, obj)}» обновлена (полей изменено: {len(changes)}).")
+    else:
+        flash(request, "Изменений нет.")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+def _delete_reference_object(db: Session, user: User, spec, obj) -> tuple[bool, str]:
+    """Удаление одной записи с защитой от использования. Возвращает (удалено, сообщение)."""
+    used = refs.usage_count(db, spec, obj)
+    name = refs.describe_object(spec, obj)
+    if used:
+        if spec.deactivate_field:
+            setattr(obj, spec.deactivate_field, False)
+            db.commit()
+            return False, (f"«{name}» используется в {used} {spec.usage_label} — удаление запрещено, "
+                           f"запись деактивирована.")
+        return False, f"«{name}» используется в {used} {spec.usage_label} — удаление запрещено."
+    _audit_reference(db, user, AuditActionType.REFERENCE_DELETED, spec, obj,
+                     old_value=refs.describe_object(spec, obj))
+    db.delete(obj)
+    db.commit()
+    return True, f"«{name}» удалено."
+
+
+@app.post("/settings/references/{key}/{pk}/delete")
+def settings_reference_delete(request: Request, key: str, pk: str, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    obj = refs.find_object(db, spec, pk) if spec else None
+    if not spec or not obj:
+        flash(request, "Запись не найдена.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+
+    deleted, message = _delete_reference_object(db, user, spec, obj)
+    flash(request, message, "info" if deleted else "error")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+@app.post("/settings/references/{key}/bulk_delete")
+async def settings_reference_bulk_delete(request: Request, key: str, db: Session = Depends(get_db)):
+    """Массовое удаление: транзакционно. Занятые записи не удаляются и перечисляются
+    в сообщении (выбран «мягкий» вариант из ТЗ — удалить всё, что можно)."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    spec = refs.get_spec(key)
+    if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+
+    form = await request.form()
+    raw_ids = [v for v in form.getlist("ids") if isinstance(v, str)]
+    deleted, blocked, deactivated = [], [], []
+    for raw in raw_ids:
+        obj = refs.find_object(db, spec, raw)
+        if not obj:
+            continue
+        name = refs.describe_object(spec, obj)
+        used = refs.usage_count(db, spec, obj)
+        if used:
+            if spec.deactivate_field:
+                setattr(obj, spec.deactivate_field, False)
+                deactivated.append(name)
+            else:
+                blocked.append(f"{name} ({used})")
+            continue
+        _audit_reference(db, user, AuditActionType.REFERENCE_DELETED, spec, obj, old_value=name)
+        db.delete(obj)
+        deleted.append(name)
+
+    db.commit()
+    if deleted:
+        flash(request, f"Удалено записей: {len(deleted)} ({', '.join(deleted)}).")
+    if deactivated:
+        flash(request, "Деактивированы (используются в заявках): " + ", ".join(deactivated) + ".", "error")
+    if blocked:
+        flash(request, "Не удалены, так как используются: " + ", ".join(blocked) + ".", "error")
+    if not (deleted or deactivated or blocked):
+        flash(request, "Ничего не выбрано.", "error")
+    return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
+
+@app.get("/settings/import")
+def settings_import_view(request: Request, db: Session = Depends(get_db), reference: str = ""):
+    """Импорт CSV. Параметр ?reference=<ключ> предвыбирает справочник — по этой
+    ссылке приходит кнопка «CSV» со страницы конкретного справочника."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    preselected = reference if reference in import_refs.IMPORTERS else ""
+    return render(request, "settings/import.html", db, preselected=preselected)
 
 
 @app.post("/settings/import")
