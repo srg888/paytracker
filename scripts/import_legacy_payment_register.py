@@ -66,6 +66,26 @@
   аудите каждой такой заявки было явно видно, что она перенесена, а не создана
   через интерфейс (см. BR в Vault после переноса).
 
+ПУСТЫЕ ЯЧЕЙКИ И "?"
+-------------------
+В исходном реестре часть ячеек пустая или содержит "?" (и похожее — "-", "н/д",
+"n/a") — это всегда трактуется как "данных нет", а не как буквальный текст:
+- Получатель / Описание / Агент / Субагент: пусто или "?" — нормально, не
+  блокирует перенос строки; вместо "?" в поле попадёт понятный плейсхолдер
+  ("— (не указан в исходном реестре)" и т.п.), а не сам знак вопроса.
+- Дата заявки: пусто → берём "Дата обновления"; если и там пусто — строка
+  не переносится (нечем датировать).
+- Статус: ПУСТАЯ ячейка → берётся DEFAULT_STATUS_FOR_EMPTY_CELL (см. настройки
+  выше). А вот статус с текстом, которого нет в STATUS_MAP (не пустой, просто
+  не описанный) — это по-прежнему ошибка: скорее всего, опечатка или новый
+  статус, который вы забыли добавить в STATUS_MAP, а не "данных нет".
+- Заказчик: пусто или не найден в системе → либо FALLBACK_REQUESTER_EMAIL
+  (если вы его настроили), либо строка блокируется — в БД это поле обязательное
+  (NOT NULL), угадывать, кто был заказчиком, скрипт не должен.
+- Сумма: пусто → строка НЕ переносится автоматически ни при каких настройках
+  (нет "суммы по умолчанию") — финансовые цифры не угадываются, такие заявки
+  нужно дозаполнить и перенести вручную отдельно.
+
 ЧЕГО СКРИПТ НЕ ДЕЛАЕТ
 ----------------------
 - Не трогает курсы ЦБ (rate_at_request и т.п. остаются NULL) — это исторические
@@ -109,6 +129,20 @@ DEFAULT_CURRENCY_CODE = "RUB"
 # остаётся NULL) — в старом реестре не было данных о том, кто именно исполнял.
 IMPORTED_BY_EMAIL = "manager@example.com"  # <-- замените на реальный email
 
+# Email пользователя, на которого записываются заявки с пустым/нераспознанным
+# "Заказчик" (requester_id в БД NOT NULL — оставить его пустым нельзя). Если
+# оставить None — такие строки блокируются и попадают в список ошибок (вы
+# сможете вручную решить, кто на самом деле был заказчиком, прежде чем
+# коммитить). Укажите реальный email — например, самого Руководителя или
+# отдельно заведённого пользователя "Архив / Заказчик не указан" — если хотите,
+# чтобы такие строки переносились автоматически и были видны одним фильтром.
+FALLBACK_REQUESTER_EMAIL: str | None = None
+
+# Статус для строк, где "Статус" ПУСТ (не заполнен в Excel вообще). Если ячейка
+# не пуста, но текст не совпал ни с одним ключом STATUS_MAP — это по-прежнему
+# ошибка (похоже на опечатку, а не на "данных нет"), строка блокируется.
+DEFAULT_STATUS_FOR_EMPTY_CELL: RequestStatus = RequestStatus.ARCHIVED
+
 # Сопоставление текстовых значений колонки "Статус" в Excel статусам PayTracker.
 # Пример — замените ключи на ваши реальные значения (смотрите, что выведет
 # сухой прогон в разделе "Статусы без сопоставления", если что-то забыли):
@@ -123,6 +157,17 @@ STATUS_MAP: dict[str, RequestStatus] = {
 PLACEHOLDER = "— (не зафиксировано при переносе из Excel-реестра)"
 
 # ==============================================================================
+
+
+EMPTY_MARKERS = {"", "?", "??", "???", "-", "--", "—", "н/д", "нет данных", "n/a", "na", "неизвестно"}
+
+
+def _clean(raw: str | None) -> str:
+    """Нормализует ячейку: обрезает пробелы и трактует '?', '-', 'н/д' и т.п.
+    как пустое значение (одна из ваших ячеек, например, буквально содержала
+    '?' — это ЗНАЧИТ 'данных нет', а не то, что получателя зовут '?')."""
+    s = (raw or "").strip()
+    return "" if s.lower() in EMPTY_MARKERS else s
 
 
 def _parse_date(raw: str) -> date:
@@ -181,67 +226,111 @@ def main() -> None:
             print(f"В CSV не хватает колонок: {sorted(missing_cols)}", file=sys.stderr)
             sys.exit(1)
 
+        fallback_requester = None
+        if FALLBACK_REQUESTER_EMAIL:
+            fallback_requester = db.query(User).filter(User.email == FALLBACK_REQUESTER_EMAIL).first()
+            if not fallback_requester:
+                errors.append(f"FALLBACK_REQUESTER_EMAIL={FALLBACK_REQUESTER_EMAIL!r} указан, но такой пользователь не найден.")
+
         for row_num, row in enumerate(reader, start=2):  # строка 1 — заголовок
-            sd_number = row["№ SD"].strip()
+            sd_number = _clean(row["№ SD"]) or f"SD?-строка{row_num}"
             row_errors: list[str] = []
+            row_warnings: list[str] = []
 
+            # --- Дата заявки: пусто → пробуем взять "Дата обновления"; если и там
+            # пусто — блокируем (без хотя бы одной даты заявке не на чем держаться).
+            request_date_raw = _clean(row["Дата заявки"])
+            updated_date_raw = _clean(row["Дата обновления"])
+            request_date = None
             try:
-                request_date = _parse_date(row["Дата заявки"])
+                if request_date_raw:
+                    request_date = _parse_date(request_date_raw)
+                elif updated_date_raw:
+                    request_date = _parse_date(updated_date_raw)
+                    row_warnings.append(f"строка {row_num} (№ SD {sd_number}): 'Дата заявки' пуста, использована 'Дата обновления'")
+                else:
+                    row_errors.append(f"строка {row_num} (№ SD {sd_number}): нет ни 'Дата заявки', ни 'Дата обновления' — дату взять неоткуда")
             except ValueError as e:
-                row_errors.append(str(e))
-                request_date = None
+                row_errors.append(f"строка {row_num} (№ SD {sd_number}): {e}")
 
-            try:
-                updated_date = _parse_date(row["Дата обновления"]) if row["Дата обновления"].strip() else request_date
-            except ValueError as e:
-                row_errors.append(str(e))
-                updated_date = request_date
+            updated_date = request_date
+            if updated_date_raw:
+                try:
+                    updated_date = _parse_date(updated_date_raw)
+                except ValueError as e:
+                    row_errors.append(f"строка {row_num} (№ SD {sd_number}): {e}")
 
-            try:
-                amount = _parse_amount(row["Сумма"])
-            except ValueError as e:
-                row_errors.append(str(e))
-                amount = None
+            # --- Сумма: намеренно НЕ подставляем 0 и не пропускаем молча — цифры
+            # в финансовом реестре не угадываются, строка просто не переносится
+            # автоматически, вы дозаполните её вручную после импорта остальных.
+            amount_raw = _clean(row["Сумма"])
+            amount = None
+            if not amount_raw:
+                row_errors.append(f"строка {row_num} (№ SD {sd_number}): 'Сумма' пуста — перенесите эту заявку вручную, сумма не угадывается")
+            else:
+                try:
+                    amount = _parse_amount(amount_raw)
+                except ValueError as e:
+                    row_errors.append(f"строка {row_num} (№ SD {sd_number}): {e}")
 
-            requester_name = row["Заказчик"].strip()
+            # --- Заказчик: пусто/не найден → либо FALLBACK_REQUESTER_EMAIL (если
+            # настроен), либо блокируем строку (requester_id в БД NOT NULL).
+            requester_name = _clean(row["Заказчик"])
             requester = db.query(User).filter(User.full_name == requester_name).first() if requester_name else None
             if not requester:
-                row_errors.append(f"строка {row_num} (№ SD {sd_number}): Заказчик {requester_name!r} не найден в системе")
+                shown_name = requester_name or "(пусто)"
+                if fallback_requester:
+                    requester = fallback_requester
+                    row_warnings.append(f"строка {row_num} (№ SD {sd_number}): Заказчик {shown_name!r} — использован резервный пользователь {FALLBACK_REQUESTER_EMAIL}")
+                else:
+                    row_errors.append(f"строка {row_num} (№ SD {sd_number}): Заказчик {shown_name!r} не найден — задайте FALLBACK_REQUESTER_EMAIL, если хотите переносить такие строки автоматически")
 
-            status_raw = row["Статус"].strip()
-            status = STATUS_MAP.get(status_raw)
-            if status is None:
-                row_errors.append(f"строка {row_num} (№ SD {sd_number}): статус {status_raw!r} не описан в STATUS_MAP")
+            # --- Статус: пустая ячейка → DEFAULT_STATUS_FOR_EMPTY_CELL; непустая,
+            # но не описанная в STATUS_MAP — это похоже на опечатку, блокируем.
+            status_raw = _clean(row["Статус"])
+            if not status_raw:
+                status = DEFAULT_STATUS_FOR_EMPTY_CELL
+                row_warnings.append(f"строка {row_num} (№ SD {sd_number}): 'Статус' пуст, использован статус по умолчанию {DEFAULT_STATUS_FOR_EMPTY_CELL.value}")
+            else:
+                status = STATUS_MAP.get(status_raw)
+                if status is None:
+                    row_errors.append(f"строка {row_num} (№ SD {sd_number}): статус {status_raw!r} не описан в STATUS_MAP (похоже на опечатку, а не на пустую ячейку)")
 
-            currency_code = (row.get("Валюта") or DEFAULT_CURRENCY_CODE).strip() or DEFAULT_CURRENCY_CODE
+            currency_code = _clean(row.get("Валюта", "")) or DEFAULT_CURRENCY_CODE
             currency = db.query(Currency).filter(Currency.code == currency_code).first()
             if not currency:
                 row_errors.append(f"строка {row_num} (№ SD {sd_number}): валюта {currency_code!r} не найдена")
 
-            agent_name = row["Агент"].strip()
+            # --- Агент/Субагент/Получатель/Описание: пусто или "?" — нормальная
+            # ситуация для старых записей, не блокирует перенос строки.
+            agent_name = _clean(row["Агент"])
             agent = None
             if agent_name:
                 agent = db.query(Agent).filter(Agent.name.ilike(agent_name)).first()
                 if not agent:
-                    warnings.append(f"строка {row_num} (№ SD {sd_number}): агент {agent_name!r} не найден — поле останется пустым")
+                    row_warnings.append(f"строка {row_num} (№ SD {sd_number}): агент {agent_name!r} не найден — поле останется пустым")
 
-            subagent_name = row["Субагент"].strip()
+            subagent_name = _clean(row["Субагент"])
             subagent = None
             if subagent_name:
                 subagent = db.query(Agent).filter(Agent.name.ilike(subagent_name)).first()
                 if not subagent:
-                    warnings.append(f"строка {row_num} (№ SD {sd_number}): субагент {subagent_name!r} не найден — поле останется пустым")
+                    row_warnings.append(f"строка {row_num} (№ SD {sd_number}): субагент {subagent_name!r} не найден — поле останется пустым")
+
+            recipient_name = _clean(row["Получатель"]) or "— (не указан в исходном реестре)"
+            description = _clean(row["Описание"]) or "(нет описания в исходном реестре)"
 
             if row_errors:
                 errors.extend(row_errors)
                 continue
+            warnings.extend(row_warnings)
 
             to_create.append(dict(
                 sd_number=sd_number,
                 request_date=request_date,
                 updated_date=updated_date,
-                description=row["Описание"].strip(),
-                recipient_name=row["Получатель"].strip() or "—",
+                description=description,
+                recipient_name=recipient_name,
                 amount=amount,
                 currency=currency,
                 status=status,
