@@ -128,7 +128,7 @@ DEFAULT_CURRENCY_CODE = "RUB"
 # Email пользователя, от чьего имени выполняется импорт (created_by_id).
 # Должен существовать в БД. Исполнитель заявкам не назначается (executor_id
 # остаётся NULL) — в старом реестре не было данных о том, кто именно исполнял.
-IMPORTED_BY_EMAIL = "manager@example.com"  # <-- замените на реальный email
+IMPORTED_BY_EMAIL = "rukovoditel@example.com"  # Сергей Руководителев (RUKOVODITEL)
 
 # Email пользователя, на которого записываются заявки с пустым/нераспознанным
 # "Заказчик" (requester_id в БД NOT NULL — оставить его пустым нельзя). Если
@@ -148,14 +148,23 @@ DEFAULT_STATUS_FOR_EMPTY_CELL: RequestStatus = RequestStatus.ARCHIVED
 # Пример — замените ключи на ваши реальные значения (смотрите, что выведет
 # сухой прогон в разделе "Статусы без сопоставления", если что-то забыли):
 STATUS_MAP: dict[str, RequestStatus] = {
-    "Оплачено": RequestStatus.CLOSED,
-    "Закрыто": RequestStatus.CLOSED,
-    "Отменено": RequestStatus.REJECTED,
-    "Отказано": RequestStatus.REJECTED,
-    "В архиве": RequestStatus.ARCHIVED,
+    # Сопоставление подтверждено владельцем реестра 2026-10-25.
+    "Исполнено": RequestStatus.CLOSED,
+    "Консультация предоставлена": RequestStatus.CLOSED,
+    "Подтверждение получения": RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
+    "Ждем подтверждение заказчика": RequestStatus.AWAITING_CUSTOMER_CONFIRMATION,
+    "Закрывающие документы": RequestStatus.DOCUMENT_CHECK,
+    "Ждем оплту от заказчика": RequestStatus.NEW,
+    # Статус записан в Excel как комментарий, а не как статус — по смыслу отказ/возврат.
+    "Возврат за вычетом комиссии 22000р. В свзи с непрохождением платежа корр.банка": RequestStatus.REJECTED,
 }
 
 PLACEHOLDER = "— (не зафиксировано при переносе из Excel-реестра)"
+
+# Отдельный короткий плейсхолдер для SWIFT/BIC: колонка swift_bic объявлена как
+# varchar(16) (стандартная длина BIC — 8 или 11 символов), поэтому общий текст
+# PLACEHOLDER туда не помещается. Смысл тот же, но в пределах лимита поля.
+PLACEHOLDER_SHORT = "н/д (перенос)"
 
 # ==============================================================================
 
@@ -338,6 +347,10 @@ def main() -> None:
                 amount=amount,
                 currency=currency,
                 status=status,
+                # Исходный текст статуса из Excel — чтобы после переноса было видно,
+                # что там было написано (например, «Ждем оплту от заказчика» с опечаткой),
+                # а не только системный статус, в который он отображён через STATUS_MAP.
+                status_raw=status_raw,
                 requester=requester,
                 agent=agent,
                 subagent=subagent,
@@ -367,7 +380,11 @@ def main() -> None:
             type=RequestType.PAYMENT,
             status=row["status"],
             title=f"[№ SD: {row['sd_number']}] {row['recipient_name']}",
-            description=f"[Перенесено из Excel-реестра, № SD: {row['sd_number']}] {row['description']}",
+            description=(
+                f"[Перенесено из Excel-реестра, № SD: {row['sd_number']}"
+                f"{' (номер сгенерирован при переносе — в исходном реестре его не было)' if row['sd_number'].startswith('SD-GEN-') else ''}"
+                f"; статус в реестре: {row['status_raw'] or 'не указан'}] {row['description']}"
+            ),
             division_id=division.id,
             created_by_id=imported_by.id,
             requester_id=row["requester"].id,
@@ -395,7 +412,7 @@ def main() -> None:
             recipient_address=PLACEHOLDER,
             recipient_bank=PLACEHOLDER,
             account_number_iban=PLACEHOLDER,
-            swift_bic=PLACEHOLDER,
+            swift_bic=PLACEHOLDER_SHORT,
             agent_id=row["agent"].id if row["agent"] else None,
             subagent_id=row["subagent"].id if row["subagent"] else None,
         )
