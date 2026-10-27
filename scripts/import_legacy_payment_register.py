@@ -382,7 +382,7 @@ def main() -> None:
             title=f"[№ SD: {row['sd_number']}] {row['recipient_name']}",
             description=(
                 f"[Перенесено из Excel-реестра, № SD: {row['sd_number']}"
-                f"{' (номер сгенерирован при переносе — в исходном реестре его не было)' if row['sd_number'].startswith('SD-GEN-') else ''}"
+                f"{' (номер сгенерирован при переносе — в исходном реестре его не было)' if row['sd_number'].startswith('SD?-строка') else ''}"
                 f"; статус в реестре: {row['status_raw'] or 'не указан'}] {row['description']}"
             ),
             division_id=division.id,
