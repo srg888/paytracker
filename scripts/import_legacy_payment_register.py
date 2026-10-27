@@ -245,8 +245,12 @@ def main() -> None:
             if not fallback_requester:
                 errors.append(f"FALLBACK_REQUESTER_EMAIL={FALLBACK_REQUESTER_EMAIL!r} указан, но такой пользователь не найден.")
 
+        generated_sd_counter = 0
         for row_num, row in enumerate(reader, start=2):  # строка 1 — заголовок
-            sd_number = _clean(row["№ SD"]) or f"SD?-строка{row_num}"
+            sd_number = _clean(row["№ SD"])
+            if not sd_number:
+                generated_sd_counter += 1
+                sd_number = f"SD-GEN-{generated_sd_counter}"
             row_errors: list[str] = []
             row_warnings: list[str] = []
 
@@ -382,7 +386,7 @@ def main() -> None:
             title=f"[№ SD: {row['sd_number']}] {row['recipient_name']}",
             description=(
                 f"[Перенесено из Excel-реестра, № SD: {row['sd_number']}"
-                f"{' (номер сгенерирован при переносе — в исходном реестре его не было)' if row['sd_number'].startswith('SD?-строка') else ''}"
+                f"{' (номер сгенерирован при переносе — в исходном реестре его не было)' if row['sd_number'].startswith('SD-GEN-') else ''}"
                 f"; статус в реестре: {row['status_raw'] or 'не указан'}] {row['description']}"
             ),
             division_id=division.id,
