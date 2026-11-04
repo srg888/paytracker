@@ -681,3 +681,20 @@ th[data-col] .th-label { vertical-align: middle; }
     table { font-size: 12px; }
     th, td { padding: 8px; }
 }
+
+/* БР-131: навязчивый баннер о договорах, которым пора на валютный контроль */
+.currency-control-banner {
+    background: var(--danger);
+    color: #fff;
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.5;
+}
+.currency-control-banner div { padding: 2px 0; }
+.currency-control-banner a {
+    color: #fff;
+    text-decoration: underline;
+    margin-left: 6px;
+    white-space: nowrap;
+}

@@ -217,10 +217,23 @@
         </select>
         <label>СУММА КОМИССИИ</label>
         <input type="text" name="commission_amount" value="{{ last_terms_proposal.commission_amount if last_terms_proposal else '' }}" required>
+        <label>КОМИССИЯ ВКЛЮЧАЕТ НДС?</label>
+        <select name="commission_includes_vat">
+            <option value="">— не указано —</option>
+            <option value="true">Да, с НДС</option>
+            <option value="false">Нет, без НДС</option>
+        </select>
         <label>КУРС</label>
         <input type="text" name="proposed_rate" value="{{ last_terms_proposal.proposed_rate if last_terms_proposal else '' }}" required>
         <label>СРОК ИСПОЛНЕНИЯ (ОБЯЗАТЕЛЬНО)</label>
         <input type="date" name="proposed_execution_deadline" value="{{ last_terms_proposal.proposed_execution_deadline.isoformat() if last_terms_proposal and last_terms_proposal.proposed_execution_deadline else '' }}" required>
+        <label>ДОГОВОР С АГЕНТОМ (БР-131, для контроля вознаграждений и валютного контроля)</label>
+        <select name="proposed_contract_id">
+            <option value="">— без договора / не агентский платёж —</option>
+            {% for c in agent_contracts %}
+            <option value="{{ c.id }}">{{ c.agent.code }} — № {{ c.number }}{% if not c.currency_control_registered %} ⚠{% endif %}</option>
+            {% endfor %}
+        </select>
         <button type="submit">[ ПРЕДЛОЖИТЬ УСЛОВИЯ ]</button>
     </form>
     {% endif %}

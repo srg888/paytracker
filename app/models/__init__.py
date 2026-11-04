@@ -1,5 +1,6 @@
 from app.db.base_class import Base
 from app.models.agent import Agent
+from app.models.agent_contract import AgentContract
 from app.models.audit_log import AuditLog
 from app.models.buyer_company import BuyerCompany
 from app.models.comment import RequestComment
@@ -17,6 +18,7 @@ from app.models.user import User
 __all__ = [
     "Base",
     "Agent",
+    "AgentContract",
     "AuditLog",
     "BuyerCompany",
     "RequestComment",

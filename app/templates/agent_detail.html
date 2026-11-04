@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name or agent.code }} — PayTracker{% endblock %}
+{% block content %}
+<h2>&lt; АГЕНТ: {{ agent.name or agent.code }} ({{ agent.code }}) &gt;</h2>
+<p style="color:var(--text-muted);font-size:13px;">
+    {{ "Резидент" if agent.is_resident else "Нерезидент" }}{% if agent.is_own_company %} · Наша компания{% endif %}{% if not agent.is_active %} · <span style="color:var(--danger)">неактивен</span>{% endif %}
+    — редактирование этих полей в <a href="/settings/references/agents">Настройки → Справочники → Агенты</a>.
+</p>
+
+<h3>ДОГОВОРЫ</h3>
+{% if current_user.role.value == "rukovoditel" %}
+<form method="post" action="/agents/{{ agent.id }}/contracts" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:16px;">
+    <div><label>Номер договора<br><input type="text" name="number" required></label></div>
+    <div><label>Дата начала<br><input type="date" name="start_date" required></label></div>
+    <div><label>Дата окончания (если есть)<br><input type="date" name="end_date"></label></div>
+    <button type="submit" class="btn">+ ДОБАВИТЬ ДОГОВОР</button>
+</form>
+{% endif %}
+
+{% if not contracts %}
+<p>У этого агента пока нет ни одного договора в системе.</p>
+{% endif %}
+
+{% for c in contracts %}
+<div class="card" style="border:1px solid {{ 'var(--danger)' if c.threshold_paid_hit and not c.contract.currency_control_registered else 'var(--border)' }};padding:16px;margin-bottom:16px;border-radius:var(--radius);">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+            <strong>Договор № {{ c.contract.number }}</strong>
+            — {{ c.contract.start_date }} {{ "— " ~ c.contract.end_date|string if c.contract.end_date else "(бессрочный / действующий)" }}
+        </div>
+        <div>
+            {% if c.contract.currency_control_registered %}
+            <span style="color:var(--ok);font-weight:600;">✓ На валютном контроле</span>
+            {% else %}
+            <span style="color:var(--danger);font-weight:600;">⚠ Не поставлен на валютный контроль</span>
+            {% endif %}
+            {% if current_user.role.value == "rukovoditel" %}
+            <form method="post" action="/agents/{{ agent.id }}/contracts/{{ c.contract.id }}/toggle_currency_control" style="display:inline">
+                <button type="submit" class="btn-small">{{ "СНЯТЬ ОТМЕТКУ" if c.contract.currency_control_registered else "ПОСТАВИТЬ НА КОНТРОЛЬ" }}</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if c.threshold_paid_hit and not c.contract.currency_control_registered %}
+    <p style="color:var(--danger);font-weight:600;">⚠ Накопленные вознаграждения по этому договору достигли {{ "%.2f"|format(c.paid_rub) }} ₽ — порог 2 800 000 ₽ превышен.</p>
+    {% endif %}
+
+    <table style="margin-top:8px;">
+        <tr><th style="text-align:left">А1. Оборот платежей (по валютам)</th>
+            <td>
+                {% for code, amt in c.turnover.by_currency.items() %}{{ "%.2f"|format(amt) }} {{ code }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}
+                <br><small style="color:var(--text-muted)">≈ {{ "%.2f"|format(c.turnover.total_rub) }} ₽{% if c.turnover.incomplete %} (занижено — не все суммы удалось сконвертировать){% endif %}</small>
+            </td></tr>
+        <tr><th style="text-align:left">А2. Вознаграждения, с НДС</th><td>{{ "%.2f"|format(c.commissions.with_vat_rub) }} ₽</td></tr>
+        <tr><th style="text-align:left">А2. Вознаграждения, без НДС</th><td>{{ "%.2f"|format(c.commissions.without_vat_rub) }} ₽</td></tr>
+        <tr><th style="text-align:left">А2. Вознаграждения, не указано (с/без НДС)</th><td>{{ "%.2f"|format(c.commissions.unspecified_rub) }} ₽{% if c.commissions.unspecified_rub > 0 %} <small style="color:var(--text-muted)">— заполняйте «Комиссия включает НДС» при согласовании условий</small>{% endif %}</td></tr>
+        <tr><th style="text-align:left">Итого выплачено (для порога 2.8/2.9 млн)</th><td><strong>{{ "%.2f"|format(c.paid_rub) }} ₽</strong></td></tr>
+    </table>
+</div>
+{% endfor %}
+{% endblock %}

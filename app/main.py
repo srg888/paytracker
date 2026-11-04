@@ -16,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.db.session import get_db
 from app.models.agent import Agent
+from app.models.agent_contract import AgentContract
 from app.models.audit_log import AuditLog
 from app.models.buyer_company import BuyerCompany
 from app.models.currency import Currency
@@ -30,7 +31,7 @@ from app.models.comment import RequestComment
 from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
-from app.services import status_machine, import_refs, reference_admin as refs
+from app.services import status_machine, import_refs, reference_admin as refs, agent_analytics
 from app.services.import_refs import ImportError_
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
@@ -364,6 +365,12 @@ def render(request: Request, template: str, db: Session, **context):
         current_user and current_user.role in (UserRole.RUKOVODITEL, UserRole.ISPOLNITEL)
     )
     can_manage_delegations = bool(current_user and current_user.role == UserRole.RUKOVODITEL)
+    # БР-131: навязчивый баннер о договорах, которым пора на валютный контроль —
+    # виден всем, у кого вообще есть доступ к аналитике (Руководитель, Исполнители),
+    # не только "ответственному" по конкретному договору — вычислить, кто именно
+    # "ответственный" за договор (в отличие от заявки) было бы отдельной сущностью,
+    # которой в первой версии нет; сознательное упрощение, см. vault.
+    triggered_contracts = agent_analytics.get_triggered_contracts(db) if can_view_analytics else []
     return templates.TemplateResponse(
         request,
         template,
@@ -372,6 +379,7 @@ def render(request: Request, template: str, db: Session, **context):
             "flash_messages": pop_flash(request),
             "can_view_analytics": can_view_analytics,
             "can_manage_delegations": can_manage_delegations,
+            "triggered_contracts": triggered_contracts,
             **context,
         },
     )
@@ -1129,6 +1137,10 @@ def _build_detail_context(request: Request, db: Session, req: RequestModel, user
         },
         agents=db.query(Agent).filter(Agent.is_active.is_(True)).all(),
         currencies=db.query(Currency).filter(Currency.is_active.is_(True)).all(),
+        # БР-131: плоский список договоров для формы согласования условий —
+        # без JS-фильтрации по выбранному агенту (форма и так без динамики
+        # нигде больше), подпись каждого варианта включает код агента.
+        agent_contracts=db.query(AgentContract).order_by(AgentContract.number).all(),
     )
 
 
@@ -1342,6 +1354,11 @@ def action_confirm_execution(request: Request, request_id: int, db: Session = De
                     ex = req.payment_details.executions[-1]
                     ex.rate = rate
                     ex.amount_rub = _rub_amount(ex.amount, rate)
+            # БР-131, порог 1 (2 800 000 ₽): проверяем именно здесь, а не на
+            # шаге mark_execution_done — тут уже зафиксированы rate_at_execution
+            # и amount_rub, запись исполнения этого платежа считается полной.
+            if req.payment_details.contract_id is not None:
+                agent_analytics.check_threshold_on_execution(db, req.payment_details.contract_id, user.id)
         db.commit()
         flash(request, "Исполнение подтверждено.")
     except status_machine.TransitionError as e:
@@ -1371,6 +1388,8 @@ def action_propose_terms(
     commission_amount: str = Form(...),
     proposed_rate: str = Form(...),
     proposed_execution_deadline: str = Form(""),
+    proposed_contract_id: str = Form(""),
+    commission_includes_vat: str = Form(""),
 ):
     user = require_login(request, db)
     if not user:
@@ -1384,6 +1403,8 @@ def action_propose_terms(
 
     agent_id = int(proposed_agent_id) if proposed_agent_id else None
     subagent_id = int(proposed_subagent_id) if proposed_subagent_id else None
+    contract_id = int(proposed_contract_id) if proposed_contract_id else None
+    vat_flag = {"true": True, "false": False}.get(commission_includes_vat, None)
 
     # BR-120: не более двух уровней, Агент и Субагент не могут совпадать.
     if proposed_payment_method == "agent":
@@ -1412,10 +1433,18 @@ def action_propose_terms(
             proposed_rate=proposed_rate,
             proposed_execution_deadline=deadline,
             proposed_by_id=user.id,
+            proposed_contract_id=contract_id,
+            commission_includes_vat=vat_flag,
         )
         db.add(proposal)
         db.flush()
         status_machine.propose_terms(db, req, user)
+        # БР-131, порог 2 (2 900 000 ₽): проверяем ДО commit, чтобы запись в
+        # аудит о срабатывании попала в ту же транзакцию, что и сама заявка.
+        if contract_id is not None:
+            planned_rub = _rub_amount(Decimal(commission_amount), Decimal(proposed_rate)) \
+                if req.payment_details.currency.code != "RUB" else Decimal(commission_amount)
+            agent_analytics.check_threshold_on_proposal(db, contract_id, planned_rub, user.id)
         db.commit()
         flash(request, "Условия предложены.")
     except status_machine.TransitionError as e:
@@ -1443,6 +1472,8 @@ def action_accept_terms(request: Request, request_id: int, db: Session = Depends
             req.payment_details.agreed_commission_amount = last.commission_amount
             req.payment_details.agreed_rate = last.proposed_rate
             req.payment_details.agreed_execution_deadline = last.proposed_execution_deadline
+            req.payment_details.contract_id = last.proposed_contract_id
+            req.payment_details.commission_includes_vat = last.commission_includes_vat
         status_machine.accept_terms(db, req, user)
         db.commit()
         flash(request, "Условия приняты.")
@@ -1662,6 +1693,106 @@ def _require_analytics_access(request: Request, db: Session) -> User | None:
         flash(request, "Доступно Руководителю и Исполнителям.", "error")
         return None
     return user
+
+
+@app.get("/agents")
+def agents_list(request: Request, db: Session = Depends(get_db)):
+    """БР-131: отдельный раздел — список агентов с итогом по валютному контролю
+    (не часть общего CRUD-реестра /settings/references/agents, который остаётся
+    местом редактирования полей агента; здесь — только просмотр и аналитика)."""
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    agents = db.query(Agent).order_by(Agent.name, Agent.code).all()
+    rows = []
+    for a in agents:
+        triggered = any(
+            not c.currency_control_registered and agent_analytics.get_contract_paid_commission_rub(db, c.id)[0] >= agent_analytics.THRESHOLD_PAID
+            for c in a.contracts
+        )
+        rows.append({"agent": a, "contracts_count": len(a.contracts), "triggered": triggered})
+    return render(request, "agents_list.html", db, rows=rows)
+
+
+@app.get("/agents/{agent_id}")
+def agent_detail(request: Request, agent_id: int, db: Session = Depends(get_db)):
+    user = _require_analytics_access(request, db)
+    if not user:
+        return RedirectResponse("/requests")
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        return RedirectResponse("/agents")
+    contracts = []
+    for c in agent.contracts:
+        turnover = agent_analytics.get_contract_turnover(db, c.id)
+        commissions = agent_analytics.get_contract_commissions(db, c.id)
+        paid, incomplete = agent_analytics.get_contract_paid_commission_rub(db, c.id)
+        contracts.append({
+            "contract": c,
+            "turnover": turnover,
+            "commissions": commissions,
+            "paid_rub": paid,
+            "incomplete": incomplete,
+            "threshold_paid_hit": paid >= agent_analytics.THRESHOLD_PAID,
+        })
+    return render(request, "agent_detail.html", db, agent=agent, contracts=contracts)
+
+
+@app.post("/agents/{agent_id}/contracts")
+def add_agent_contract(
+    request: Request, agent_id: int, db: Session = Depends(get_db),
+    number: str = Form(...), start_date: str = Form(...), end_date: str = Form(""),
+):
+    """Договоры заводятся прямо на карточке агента — это вложенный список,
+    общий CRUD-реестр справочников не рассчитан на такую структуру."""
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        return RedirectResponse("/agents")
+    if not number.strip():
+        flash(request, "Укажите номер договора.", "error")
+        return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    try:
+        start = date.fromisoformat(start_date)
+    except ValueError:
+        flash(request, "Некорректная дата начала договора.", "error")
+        return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    end = date.fromisoformat(end_date) if end_date else None
+    contract = AgentContract(agent_id=agent.id, number=number.strip(), start_date=start, end_date=end)
+    db.add(contract)
+    db.add(AuditLog(
+        entity_type="agent_contract", entity_id=agent.id, user_id=user.id,
+        action_type=AuditActionType.REFERENCE_CREATED,
+        new_value=f"agent={agent.code}; number={number.strip()}",
+    ))
+    db.commit()
+    flash(request, f"Договор {number.strip()} добавлен.")
+    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+
+
+@app.post("/agents/{agent_id}/contracts/{contract_id}/toggle_currency_control")
+def toggle_contract_currency_control(request: Request, agent_id: int, contract_id: int, db: Session = Depends(get_db)):
+    """БР-131: поставить/снять отметку о постановке договора на валютный
+    контроль. Только Руководитель — это комплаенс-решение, не рабочее действие
+    по заявке (в отличие от БР-055, где решение по документу доверено Исполнителю)."""
+    user = _require_rukovoditel(request, db)
+    if not user:
+        return RedirectResponse(f"/agents/{agent_id}", status_code=303)
+    contract = db.get(AgentContract, contract_id)
+    if not contract or contract.agent_id != agent_id:
+        return RedirectResponse(f"/agents/{agent_id}")
+    old = contract.currency_control_registered
+    contract.currency_control_registered = not old
+    db.add(AuditLog(
+        entity_type="agent_contract", entity_id=contract.id, user_id=user.id,
+        action_type=AuditActionType.REFERENCE_UPDATED, field_name="currency_control_registered",
+        old_value=str(old), new_value=str(not old),
+    ))
+    db.commit()
+    flash(request, f"Договор {contract.number}: валютный контроль {'поставлен' if not old else 'снят'}.")
+    return RedirectResponse(f"/agents/{agent_id}", status_code=303)
 
 
 @app.get("/delegations")

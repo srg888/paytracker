@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
 from app.models.mixins import TimestampMixin
@@ -20,3 +20,7 @@ class Agent(Base, TimestampMixin):
     # Признак "наша собственная компания" (см. Словарь: Платёжный агент) —
     # при маршруте через такого агента комплект документов тот же (ПА-01…ПА-08).
     is_own_company: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    contracts: Mapped[list["AgentContract"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan", order_by="AgentContract.start_date"
+    )

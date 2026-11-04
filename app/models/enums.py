@@ -79,6 +79,7 @@ class AuditActionType(str, enum.Enum):
     REQUEST_DELETED = "request_deleted"
     MANAGER_EDITED_REQUEST = "manager_edited_request"
     REQUEST_IMPORTED = "request_imported"
+    CURRENCY_CONTROL_THRESHOLD_TRIGGERED = "currency_control_threshold_triggered"
 
 
 class ExportFormat(str, enum.Enum):

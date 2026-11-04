@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Агенты — PayTracker{% endblock %}
+{% block content %}
+<h2>&lt; АГЕНТЫ &gt;</h2>
+<p style="color:var(--text-muted);font-size:13px;">Редактирование полей агента — в <a href="/settings/references/agents">Настройки → Справочники → Агенты</a>. Здесь — просмотр и аналитика по договорам (БР-131).</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>КОД</th><th>НАЗВАНИЕ</th><th>ДОГОВОРОВ</th><th>ВАЛЮТНЫЙ КОНТРОЛЬ</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in rows %}
+        <tr onclick="location.href='/agents/{{ row.agent.id }}'" style="cursor:pointer">
+            <td><strong>{{ row.agent.code }}</strong></td>
+            <td>{{ row.agent.name }}{% if not row.agent.is_active %} <span style="color:var(--text-faint)">(неактивен)</span>{% endif %}</td>
+            <td>{{ row.contracts_count }}</td>
+            <td>
+                {% if row.triggered %}
+                <span style="color:#fff;background:var(--danger);padding:2px 8px;border-radius:var(--radius-sm);font-weight:600;">⚠ ПОРА НА КОНТРОЛЬ</span>
+                {% else %}
+                <span style="color:var(--text-faint)">—</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">АГЕНТОВ НЕТ.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

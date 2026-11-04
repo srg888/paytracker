@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -29,6 +29,9 @@ class PaymentTermsProposal(Base):
     commission_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     proposed_rate: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     proposed_execution_deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # БР-131: договор с агентом, по которому будет выплачено вознаграждение.
+    proposed_contract_id: Mapped[int | None] = mapped_column(ForeignKey("agent_contracts.id"), nullable=True)
+    commission_includes_vat: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     proposed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -43,5 +46,6 @@ class PaymentTermsProposal(Base):
     payment_request: Mapped["PaymentRequest"] = relationship(back_populates="terms_proposals")
     proposed_agent: Mapped["Agent | None"] = relationship(foreign_keys=[proposed_agent_id])
     proposed_subagent: Mapped["Agent | None"] = relationship(foreign_keys=[proposed_subagent_id])
+    proposed_contract: Mapped["AgentContract | None"] = relationship(foreign_keys=[proposed_contract_id])
     proposed_by: Mapped["User"] = relationship(foreign_keys=[proposed_by_id])
     decided_by: Mapped["User | None"] = relationship(foreign_keys=[decided_by_id])

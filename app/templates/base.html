@@ -11,10 +11,18 @@
         {% if current_user %}
         <span class="user-info">&gt; {{ current_user.full_name }} <span class="badge">{{ current_user.role.value }}</span></span>
         {% if can_manage_delegations %}<a href="/delegations" class="nav-link">// ДЕЛЕГИРОВАНИЕ</a>{% endif %}
-        {% if can_view_analytics %}<a href="/audit" class="nav-link">// АУДИТ</a><a href="/reports" class="nav-link">// ОТЧЁТЫ</a><a href="/settings" class="nav-link">// НАСТРОЙКИ</a>{% endif %}
+        {% if can_view_analytics %}<a href="/agents" class="nav-link">// АГЕНТЫ</a><a href="/audit" class="nav-link">// АУДИТ</a><a href="/reports" class="nav-link">// ОТЧЁТЫ</a><a href="/settings" class="nav-link">// НАСТРОЙКИ</a>{% endif %}
         <a href="/logout" class="logout">X ВЫЙТИ</a>
         {% endif %}
     </header>
+
+    {% if triggered_contracts %}
+    <div class="currency-control-banner">
+        {% for t in triggered_contracts %}
+        <div>⚠ БР-131: договор «{{ t.contract.number }}» с агентом «{{ t.contract.agent.name or t.contract.agent.code }}» — выплачено {{ "%.2f"|format(t.paid_rub) }} ₽{% if t.incomplete %} (сумма занижена — не все заявки удалось сконвертировать в рубли){% endif %}. Пора поставить договор на валютный контроль! <a href="/agents/{{ t.contract.agent_id }}">[ ОТКРЫТЬ ДОГОВОР ]</a></div>
+        {% endfor %}
+    </div>
+    {% endif %}
 
     <main class="container">
         {% for f in flash_messages %}

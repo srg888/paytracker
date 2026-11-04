@@ -108,11 +108,19 @@ class PaymentRequest(Base):
     agreed_commission_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     agreed_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     agreed_execution_deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # БР-131: договор с агентом/субагентом, по которому ведётся вознаграждение
+    # этой заявки — учёт оборотов/вознаграждений и порог валютного контроля
+    # считаются в разрезе договора, не агента в целом. Nullable — для заявок
+    # без агента (прямой платёж) и для перенесённых исторических заявок, где
+    # договор не был зафиксирован (см. scripts/import_legacy_payment_register.py).
+    contract_id: Mapped[int | None] = mapped_column(ForeignKey("agent_contracts.id"), nullable=True)
+    commission_includes_vat: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     request: Mapped["Request"] = relationship(back_populates="payment_details")
     currency: Mapped["Currency"] = relationship()
     agent: Mapped["Agent | None"] = relationship(foreign_keys=[agent_id])
     subagent: Mapped["Agent | None"] = relationship(foreign_keys=[subagent_id])
+    contract: Mapped["AgentContract | None"] = relationship(foreign_keys=[contract_id])
     terms_proposals: Mapped[list["PaymentTermsProposal"]] = relationship(
         back_populates="payment_request", cascade="all, delete-orphan"
     )
