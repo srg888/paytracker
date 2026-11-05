@@ -1,8 +1,8 @@
 """add contract_id/commission_includes_vat to payment_requests and
 payment_terms_proposals; add CURRENCY_CONTROL_THRESHOLD_TRIGGERED audit value
 
-Revision ID: b2c3d4e5f6a7
-Revises: a1b2c3d4e5f6
+Revision ID: b8d2f0a5c3e9
+Revises: a7c1e9f4b2d8
 Create Date: 2026-10-30 00:05:00.000000
 
 """
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = 'b2c3d4e5f6a7'
-down_revision: Union[str, Sequence[str], None] = 'a1b2c3d4e5f6'
+revision: str = 'b8d2f0a5c3e9'
+down_revision: Union[str, Sequence[str], None] = 'a7c1e9f4b2d8'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

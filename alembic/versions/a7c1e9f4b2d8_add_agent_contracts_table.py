@@ -1,6 +1,6 @@
 """add agent_contracts table
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: a7c1e9f4b2d8
 Revises: e6f7a8b9c0d1
 Create Date: 2026-10-30 00:00:00.000000
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = 'a1b2c3d4e5f6'
+revision: str = 'a7c1e9f4b2d8'
 down_revision: Union[str, Sequence[str], None] = 'e6f7a8b9c0d1'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
