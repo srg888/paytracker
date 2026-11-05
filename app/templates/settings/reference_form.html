@@ -15,11 +15,27 @@
       action="{{ ('/settings/references/' ~ spec.key ~ '/' ~ obj[spec.pk_field] ~ '/update') if obj else ('/settings/references/' ~ spec.key ~ '/create') }}">
 
     {% for f in spec.fields %}
-        {% if f.virtual %}
-        {#- Виртуальное поле вычисляется из связанных данных (например действующий
-            договор агента) — только показ, правится на своей странице. -#}
+        {% if f.virtual and f.setter is none %}
+        {#- Виртуальное поле только для показа: вычисляется из связанных данных,
+            правится на своей странице. -#}
         <label>{{ f.label }}</label>
         <input type="text" value="{{ form.get(f.name) or '—' }}" readonly disabled class="ref-virtual">
+        {% if f.hint %}<p class="ref-field-hint">{{ f.hint }}</p>{% endif %}
+        {% elif f.virtual and f.type == 'bool' %}
+        {#- Редактируемое виртуальное поле: пишет в связанную сущность (договор) -#}
+        <label class="ref-checkbox-label">
+            <input type="checkbox" name="{{ f.name }}" value="1" {% if form.get(f.name) %}checked{% endif %}>
+            <span>{{ f.label }}</span>
+        </label>
+        {% if f.hint %}<p class="ref-field-hint">{{ f.hint }}</p>{% endif %}
+        {% elif f.virtual and f.type == 'date' %}
+        <label>{{ f.label }}</label>
+        <input type="date" name="{{ f.name }}" value="{{ form.get(f.name) or '' }}">
+        {% if f.hint %}<p class="ref-field-hint">{{ f.hint }}</p>{% endif %}
+        {% elif f.virtual %}
+        <label>{{ f.label }}</label>
+        <input type="text" name="{{ f.name }}" value="{{ form.get(f.name) or '' }}"
+               {% if f.max_length %}maxlength="{{ f.max_length }}"{% endif %}>
         {% if f.hint %}<p class="ref-field-hint">{{ f.hint }}</p>{% endif %}
         {% else %}
         {% set readonly = obj and ((f.name == spec.pk_field) or not f.editable) %}

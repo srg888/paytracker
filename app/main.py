@@ -2210,10 +2210,14 @@ async def settings_reference_create(request: Request, key: str, db: Session = De
         return render(request, "settings/reference_form.html", db,
                       spec=spec, obj=None, form=form, errors=errors, status_code=400)
 
-    obj = spec.model(**result.values)
+    stored, virtual = refs.split_values(spec, result.values)
+    obj = spec.model(**stored)
     db.add(obj)
     try:
         db.flush()
+        if virtual:
+            refs.apply_virtual(db, spec, obj, virtual)
+            db.flush()
     except Exception:
         db.rollback()
         return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form=form,
@@ -2237,11 +2241,9 @@ def settings_reference_edit_form(request: Request, key: str, pk: str, db: Sessio
     if not spec or not obj:
         flash(request, "Запись не найдена.", "error")
         return RedirectResponse("/settings/references", status_code=303)
-    # виртуальные поля показываем в человекочитаемом виде (дата ДД.ММ.ГГГГ, «да»/«нет»)
-    form = {
-        f.name: (refs.display_value(obj, f) if f.virtual else refs.field_value(obj, f))
-        for f in spec.fields
-    }
+    # значения для формы: у виртуальных полей берём «сырое» значение, чтобы
+    # <input type="date"> получил ГГГГ-ММ-ДД, а чекбокс — bool, а не текст «да»
+    form = {f.name: refs.field_value(obj, f) for f in spec.fields}
     return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form, errors=[])
 
 
@@ -2263,8 +2265,10 @@ async def settings_reference_update(request: Request, key: str, pk: str, db: Ses
         return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form,
                       errors=errors, status_code=400)
 
+    stored, virtual = refs.split_values(spec, result.values)
+
     changes = []
-    for name, new_value in result.values.items():
+    for name, new_value in stored.items():
         old_value = getattr(obj, name)
         # enum приходит строкой — сравниваем по значению
         comparable_old = getattr(old_value, "value", old_value)
@@ -2274,6 +2278,12 @@ async def settings_reference_update(request: Request, key: str, pk: str, db: Ses
         changes.append((name, comparable_old, new_value))
         _audit_reference(db, user, AuditActionType.REFERENCE_UPDATED, spec, obj,
                          field_name=name, old_value=str(comparable_old), new_value=str(new_value))
+
+    # виртуальные поля пишутся в связанную сущность (например в договор агента)
+    for name, old_value, new_value in refs.apply_virtual(db, spec, obj, virtual):
+        changes.append((name, old_value, new_value))
+        _audit_reference(db, user, AuditActionType.REFERENCE_UPDATED, spec, obj,
+                         field_name=name, old_value=old_value, new_value=new_value)
 
     if changes:
         db.commit()

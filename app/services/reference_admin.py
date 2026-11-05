@@ -21,6 +21,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.agent import Agent
+from app.models.agent_contract import AgentContract
 from app.models.buyer_company import BuyerCompany
 from app.models.currency import Currency, ExchangeRate
 from app.models.document import RequestDocument, RequestDocumentRequirement
@@ -43,11 +44,16 @@ class ReferenceField:
     max_length: int | None = None
     choices: list[tuple[str, str]] = field(default_factory=list)  # для enum: (значение, подпись)
     hint: str | None = None
-    # Поле не хранится в самой модели справочника, а вычисляется из связанных
-    # данных (пример: действующий договор агента из agent_contracts). Только
-    # для показа: не участвует в валидации, сохранении и проверке уникальности.
+    # Поле не хранится в колонке модели справочника, а вычисляется из связанных
+    # данных (пример: действующий договор агента из agent_contracts).
     virtual: bool = False
     getter: Callable[[Any], Any] | None = None
+    # Как записать значение в связанную сущность. Если задан — поле можно
+    # править прямо в справочнике: setter сам решит, обновлять существующую
+    # связанную запись или создавать новую.
+    setter: Callable[[Session, Any, Any], None] | None = None
+    # Сущность, в которую пишет setter — для записи в аудит (entity_type).
+    writes_to: str | None = None
 
 
 @dataclass
@@ -178,6 +184,48 @@ def _agent_currency_control(obj: Agent):
     return contract.currency_control_registered if contract else None
 
 
+def _contract_for_write(db: Session, agent: Agent, start_date: date | None = None):
+    """Договор агента, в который пишем значения из справочника.
+
+    Если действующий договор есть — правим его. Если нет — создаём новый:
+    правка «№ договора» в пустой строке справочника означает «завести договор»,
+    это естественнее, чем запрещать ввод.
+    """
+    contract = _active_contract(agent)
+    if contract is not None:
+        return contract
+    contract = AgentContract(
+        agent_id=agent.id,
+        number="—",
+        start_date=start_date or date.today(),
+        currency_control_registered=False,
+    )
+    db.add(contract)
+    agent.contracts.append(contract)
+    return contract
+
+
+def _set_agent_contract_number(db: Session, agent: Agent, value) -> None:
+    text = (value or "").strip()
+    contract = _contract_for_write(db, agent)
+    if not text:
+        return  # пустой номер не затирает уже введённый
+    contract.number = text
+
+
+def _set_agent_contract_date(db: Session, agent: Agent, value) -> None:
+    if not value:
+        return
+    parsed = value if isinstance(value, date) else date.fromisoformat(str(value))
+    contract = _contract_for_write(db, agent, start_date=parsed)
+    contract.start_date = parsed
+
+
+def _set_agent_currency_control(db: Session, agent: Agent, value) -> None:
+    contract = _contract_for_write(db, agent)
+    contract.currency_control_registered = bool(value)
+
+
 REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
     "divisions": ReferenceSpec(
         key="divisions",
@@ -243,13 +291,16 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             # БР-131: договор агента — отдельная таблица (у агента их может быть
             # несколько), поэтому здесь только показ действующего договора.
             # Заводится и правится на карточке агента «// АГЕНТЫ».
-            ReferenceField("contract_number", "№ договора", "str", virtual=True,
-                           getter=_agent_contract_number,
-                           hint="Показывается действующий договор; заводится на карточке агента"),
+            ReferenceField("contract_number", "№ договора", "str", virtual=True, max_length=100,
+                           getter=_agent_contract_number, setter=_set_agent_contract_number,
+                           writes_to="agent_contract",
+                           hint="Правит действующий договор; если договора нет — создаст его"),
             ReferenceField("contract_date", "Дата договора", "date", virtual=True,
-                           getter=_agent_contract_date),
+                           getter=_agent_contract_date, setter=_set_agent_contract_date,
+                           writes_to="agent_contract"),
             ReferenceField("currency_control", "Поставлен на валютный контроль", "bool", virtual=True,
-                           getter=_agent_currency_control),
+                           getter=_agent_currency_control, setter=_set_agent_currency_control,
+                           writes_to="agent_contract"),
         ],
         relations=[Agent.contracts],
         usage_check=_agent_usage,
@@ -361,14 +412,52 @@ class ValidationResult:
     errors: list[str] = field(default_factory=list)
 
 
+def split_values(spec: ReferenceSpec, values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Делит проверенные значения на два набора: колонки самой модели справочника
+    и значения виртуальных полей (они пишутся в связанную сущность через setter)."""
+    stored: dict[str, Any] = {}
+    virtual: dict[str, Any] = {}
+    for f in spec.fields:
+        if f.name not in values:
+            continue
+        if f.virtual:
+            if f.setter is not None:
+                virtual[f.name] = values[f.name]
+            continue
+        stored[f.name] = values[f.name]
+    return stored, virtual
+
+
+def apply_virtual(db: Session, spec: ReferenceSpec, obj: Any, virtual_values: dict[str, Any]) -> list[tuple[str, str | None, str | None]]:
+    """Применяет значения виртуальных полей через их setter'ы.
+
+    Возвращает список изменений (имя поля, было, стало) — для сообщения и аудита.
+    """
+    changes: list[tuple[str, str | None, str | None]] = []
+    for f in spec.fields:
+        if f.name not in virtual_values or f.setter is None:
+            continue
+        before = f.getter(obj) if f.getter else None
+        f.setter(db, obj, virtual_values[f.name])
+        after = f.getter(obj) if f.getter else None
+        comparable_before = getattr(before, "isoformat", lambda: before)()
+        comparable_after = getattr(after, "isoformat", lambda: after)()
+        if comparable_before != comparable_after:
+            changes.append((f.name, str(comparable_before), str(comparable_after)))
+    return changes
+
 def validate_form(spec: ReferenceSpec, form: dict[str, str], existing: Any | None) -> ValidationResult:
     """Приводит данные формы к значениям модели с проверкой типов и обязательности."""
     values: dict[str, Any] = {}
     errors: list[str] = []
 
     for f in spec.fields:
+        if f.virtual and f.setter is None:
+            continue  # поле только для показа: не хранится в модели и не меняется отсюда
         if f.virtual:
-            continue  # вычисляемые поля (например действующий договор) не хранятся в модели
+            # редактируемое виртуальное поле: значение проверим и применим отдельно,
+            # в колонку модели оно не попадает
+            pass
         if existing is not None and (not f.editable or f.name == spec.pk_field):
             continue  # при редактировании неизменяемые поля (например код) не трогаем
         if existing is not None and f.name not in form and f.type != "bool":
@@ -378,7 +467,26 @@ def validate_form(spec: ReferenceSpec, form: dict[str, str], existing: Any | Non
 
         raw = form.get(f.name)
         if f.type == "bool":
+            # checkbox: отсутствие в форме = снятая галочка
             values[f.name] = raw is not None
+            continue
+
+        if f.type == "date":
+            text = (raw or "").strip()
+            if not text:
+                values[f.name] = None
+                continue
+            try:
+                # принимаем формат из поля <input type="date"> (ГГГГ-ММ-ДД) и ДД.ММ.ГГГГ
+                parsed = (
+                    date.fromisoformat(text)
+                    if "-" in text
+                    else date(*reversed([int(p) for p in text.split(".")]))
+                )
+            except (ValueError, TypeError):
+                errors.append(f"«{f.label}»: некорректная дата.")
+                continue
+            values[f.name] = parsed
             continue
 
         text = (raw or "").strip()
