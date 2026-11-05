@@ -2237,7 +2237,11 @@ def settings_reference_edit_form(request: Request, key: str, pk: str, db: Sessio
     if not spec or not obj:
         flash(request, "Запись не найдена.", "error")
         return RedirectResponse("/settings/references", status_code=303)
-    form = {f.name: refs.field_value(obj, f) for f in spec.fields}
+    # виртуальные поля показываем в человекочитаемом виде (дата ДД.ММ.ГГГГ, «да»/«нет»)
+    form = {
+        f.name: (refs.display_value(obj, f) if f.virtual else refs.field_value(obj, f))
+        for f in spec.fields
+    }
     return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form, errors=[])
 
 

@@ -698,3 +698,6 @@ th[data-col] .th-label { vertical-align: middle; }
     margin-left: 6px;
     white-space: nowrap;
 }
+
+/* Виртуальное поле справочника: вычисляется из связанных данных, только показ */
+.ref-virtual { background: var(--surface-alt, #f4f4f2); color: var(--muted, #6b6b66); cursor: not-allowed; }

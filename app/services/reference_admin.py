@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Callable
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.agent import Agent
 from app.models.buyer_company import BuyerCompany
@@ -42,6 +43,11 @@ class ReferenceField:
     max_length: int | None = None
     choices: list[tuple[str, str]] = field(default_factory=list)  # для enum: (значение, подпись)
     hint: str | None = None
+    # Поле не хранится в самой модели справочника, а вычисляется из связанных
+    # данных (пример: действующий договор агента из agent_contracts). Только
+    # для показа: не участвует в валидации, сохранении и проверке уникальности.
+    virtual: bool = False
+    getter: Callable[[Any], Any] | None = None
 
 
 @dataclass
@@ -62,6 +68,9 @@ class ReferenceSpec:
     # краткое описание для экрана списка справочников
     description: str = ""
     order_by: str | None = None
+    # связи, подгружаемые заранее (selectinload) — иначе виртуальные поля
+    # вроде «действующий договор» дают по запросу на каждую строку таблицы
+    relations: list[Any] = field(default_factory=list)
 
 
 def _count_requests_by(model_name: str, **conditions) -> Callable[[Session, Any], int]:
@@ -140,6 +149,35 @@ def _document_type_usage(db: Session, obj: Any) -> int:
     return docs + reqs
 
 
+def _active_contract(obj: Agent):
+    """Действующий договор агента на сегодня — для показа в справочнике.
+
+    Договор — отдельная сущность (БР-131), у агента их может быть несколько.
+    Если действующих несколько, берётся последний по дате начала: именно он
+    определяет текущие условия работы.
+    """
+    today = date.today()
+    active = [c for c in (obj.contracts or []) if c.is_active_on(today)]
+    if not active:
+        return None
+    return max(active, key=lambda c: c.start_date)
+
+
+def _agent_contract_number(obj: Agent):
+    contract = _active_contract(obj)
+    return contract.number if contract else None
+
+
+def _agent_contract_date(obj: Agent):
+    contract = _active_contract(obj)
+    return contract.start_date if contract else None
+
+
+def _agent_currency_control(obj: Agent):
+    contract = _active_contract(obj)
+    return contract.currency_control_registered if contract else None
+
+
 REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
     "divisions": ReferenceSpec(
         key="divisions",
@@ -202,7 +240,18 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             ReferenceField("is_resident", "Резидент", "bool"),
             ReferenceField("is_active", "Активен", "bool"),
             ReferenceField("is_own_company", "Наша компания", "bool"),
+            # БР-131: договор агента — отдельная таблица (у агента их может быть
+            # несколько), поэтому здесь только показ действующего договора.
+            # Заводится и правится на карточке агента «// АГЕНТЫ».
+            ReferenceField("contract_number", "№ договора", "str", virtual=True,
+                           getter=_agent_contract_number,
+                           hint="Показывается действующий договор; заводится на карточке агента"),
+            ReferenceField("contract_date", "Дата договора", "date", virtual=True,
+                           getter=_agent_contract_date),
+            ReferenceField("currency_control", "Поставлен на валютный контроль", "bool", virtual=True,
+                           getter=_agent_currency_control),
         ],
+        relations=[Agent.contracts],
         usage_check=_agent_usage,
         usage_label="заявках",
         deactivate_field="is_active",
@@ -244,6 +293,9 @@ def get_pk_value(spec: ReferenceSpec, obj: Any) -> str:
 
 def list_objects(db: Session, spec: ReferenceSpec) -> list[Any]:
     q = db.query(spec.model)
+    if spec.relations:
+        # предзагрузка одним дополнительным запросом вместо N+1 на виртуальные поля
+        q = q.options(*[selectinload(rel) for rel in spec.relations])
     if spec.order_by:
         q = q.order_by(getattr(spec.model, spec.order_by))
     return q.all()
@@ -260,6 +312,8 @@ def find_object(db: Session, spec: ReferenceSpec, pk_value: str) -> Any | None:
 
 
 def field_value(obj: Any, f: ReferenceField) -> Any:
+    if f.virtual:
+        return f.getter(obj) if f.getter else None
     value = getattr(obj, f.name, None)
     if isinstance(value, bool) or value is None:
         return value
@@ -272,6 +326,10 @@ def display_value(obj: Any, f: ReferenceField) -> str:
     """Значение поля для показа в таблице."""
     value = field_value(obj, f)
     if f.type == "bool":
+        # None означает «нет данных» (например у агента нет действующего договора) —
+        # это не то же самое, что явное «нет»
+        if value is None:
+            return "—"
         return "да" if value else "нет"
     if f.type == "enum":
         for raw, label in f.choices:
@@ -280,6 +338,8 @@ def display_value(obj: Any, f: ReferenceField) -> str:
         return str(value) if value is not None else "—"
     if value is None or value == "":
         return "—"
+    if f.type == "date" and isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
     return str(value)
 
 
@@ -307,6 +367,8 @@ def validate_form(spec: ReferenceSpec, form: dict[str, str], existing: Any | Non
     errors: list[str] = []
 
     for f in spec.fields:
+        if f.virtual:
+            continue  # вычисляемые поля (например действующий договор) не хранятся в модели
         if existing is not None and (not f.editable or f.name == spec.pk_field):
             continue  # при редактировании неизменяемые поля (например код) не трогаем
         if existing is not None and f.name not in form and f.type != "bool":
