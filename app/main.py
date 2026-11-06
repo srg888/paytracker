@@ -1723,6 +1723,18 @@ def agent_detail(request: Request, agent_id: int, db: Session = Depends(get_db))
     if not agent:
         return RedirectResponse("/agents")
     contracts = []
+    # Итоги по агенту в целом — сумма по всем его договорам. Нужны, чтобы
+    # отчёт отвечал на вопрос «сколько прошло через агента», а не только
+    # «сколько по каждому договору».
+    agent_totals = {
+        "turnover_rub": Decimal("0"),
+        "with_vat": Decimal("0"),
+        "without_vat": Decimal("0"),
+        "unspecified": Decimal("0"),
+        "paid_rub": Decimal("0"),
+        "by_currency": {},
+        "incomplete": False,
+    }
     for c in agent.contracts:
         turnover = agent_analytics.get_contract_turnover(db, c.id)
         commissions = agent_analytics.get_contract_commissions(db, c.id)
@@ -1735,13 +1747,29 @@ def agent_detail(request: Request, agent_id: int, db: Session = Depends(get_db))
             "incomplete": incomplete,
             "threshold_paid_hit": paid >= agent_analytics.THRESHOLD_PAID,
         })
-    return render(request, "agent_detail.html", db, agent=agent, contracts=contracts)
+        agent_totals["turnover_rub"] += turnover["total_rub"]
+        agent_totals["with_vat"] += commissions["with_vat_rub"]
+        agent_totals["without_vat"] += commissions["without_vat_rub"]
+        agent_totals["unspecified"] += commissions["unspecified_rub"]
+        agent_totals["paid_rub"] += paid
+        agent_totals["incomplete"] = agent_totals["incomplete"] or turnover["incomplete"]
+        for code, amount in turnover["by_currency"].items():
+            agent_totals["by_currency"][code] = agent_totals["by_currency"].get(code, Decimal("0")) + amount
+    principals = (
+        db.query(User)
+        .filter(User.role == UserRole.ZAKAZCHIK, User.is_active.is_(True))
+        .order_by(User.full_name)
+        .all()
+    )
+    return render(request, "agent_detail.html", db, agent=agent, contracts=contracts,
+                  principals=principals, totals=agent_totals)
 
 
 @app.post("/agents/{agent_id}/contracts")
 def add_agent_contract(
     request: Request, agent_id: int, db: Session = Depends(get_db),
     number: str = Form(...), start_date: str = Form(...), end_date: str = Form(""),
+    principal_id: str = Form(""),
 ):
     """Договоры заводятся прямо на карточке агента — это вложенный список,
     общий CRUD-реестр справочников не рассчитан на такую структуру."""
@@ -1760,12 +1788,18 @@ def add_agent_contract(
         flash(request, "Некорректная дата начала договора.", "error")
         return RedirectResponse(f"/agents/{agent_id}", status_code=303)
     end = date.fromisoformat(end_date) if end_date else None
-    contract = AgentContract(agent_id=agent.id, number=number.strip(), start_date=start, end_date=end)
+    principal = db.get(User, int(principal_id)) if principal_id.strip().isdigit() else None
+    if principal is not None and principal.role != UserRole.ZAKAZCHIK:
+        principal = None  # принципалом может быть только заказчик
+    contract = AgentContract(
+        agent_id=agent.id, number=number.strip(), start_date=start, end_date=end,
+        principal_id=principal.id if principal else None,
+    )
     db.add(contract)
     db.add(AuditLog(
         entity_type="agent_contract", entity_id=agent.id, user_id=user.id,
         action_type=AuditActionType.REFERENCE_CREATED,
-        new_value=f"agent={agent.code}; number={number.strip()}",
+        new_value=f"agent={agent.code}; number={number.strip()}; principal={principal.full_name if principal else '—'}",
     ))
     db.commit()
     flash(request, f"Договор {number.strip()} добавлен.")

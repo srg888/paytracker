@@ -28,7 +28,15 @@ class AgentContract(Base, TimestampMixin):
     # навязчивый баннер (см. app/services/agent_analytics.py).
     currency_control_registered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Принципал — заказчик, в интересах которого действует агент. Заявки
+    # привязаны к заказчику через requester_id, поэтому обороты по договору
+    # считаются в разрезе «агент × принципал × договор».
+    principal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+
     agent: Mapped["Agent"] = relationship(back_populates="contracts")
+    principal: Mapped["User | None"] = relationship(foreign_keys=[principal_id])
 
     def is_active_on(self, on_date: date) -> bool:
         if on_date < self.start_date:

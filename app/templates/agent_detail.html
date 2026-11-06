@@ -7,12 +7,35 @@
     — редактирование этих полей в <a href="/settings/references/agents">Настройки → Справочники → Агенты</a>.
 </p>
 
+{% if contracts %}
+<div class="card" style="background:var(--surface-alt,#f7f7f5);padding:16px;margin-bottom:16px;border-radius:var(--radius);border:1px solid var(--border);">
+    <h3 style="margin-top:0;">ИТОГО ПО АГЕНТУ ({{ contracts|length }} {{ "договор" if contracts|length == 1 else ("договора" if contracts|length < 5 else "договоров") }})</h3>
+    <table>
+        <tr><th style="text-align:left">Оборот платежей</th>
+            <td>
+                {% for code, amt in totals.by_currency.items() %}{{ "%.2f"|format(amt) }} {{ code }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}
+                <br><small style="color:var(--text-muted)">≈ {{ "%.2f"|format(totals.turnover_rub) }} ₽{% if totals.incomplete %} (занижено){% endif %}</small>
+            </td></tr>
+        <tr><th style="text-align:left">Вознаграждения, с НДС</th><td>{{ "%.2f"|format(totals.with_vat) }} ₽</td></tr>
+        <tr><th style="text-align:left">Вознаграждения, без НДС</th><td>{{ "%.2f"|format(totals.without_vat) }} ₽</td></tr>
+        <tr><th style="text-align:left">Вознаграждения, НДС не указан</th><td>{{ "%.2f"|format(totals.unspecified) }} ₽</td></tr>
+        <tr><th style="text-align:left">Итого вознаграждений (выплачено)</th><td><strong>{{ "%.2f"|format(totals.paid_rub) }} ₽</strong></td></tr>
+    </table>
+</div>
+{% endif %}
+
 <h3>ДОГОВОРЫ</h3>
 {% if current_user.role.value == "rukovoditel" %}
 <form method="post" action="/agents/{{ agent.id }}/contracts" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin-bottom:16px;">
     <div><label>Номер договора<br><input type="text" name="number" required></label></div>
     <div><label>Дата начала<br><input type="date" name="start_date" required></label></div>
     <div><label>Дата окончания (если есть)<br><input type="date" name="end_date"></label></div>
+    <div><label>Принципал (заказчик)<br>
+        <select name="principal_id">
+            <option value="">— не указан —</option>
+            {% for p in principals %}<option value="{{ p.id }}">{{ p.full_name }}</option>{% endfor %}
+        </select>
+    </label></div>
     <button type="submit" class="btn">+ ДОБАВИТЬ ДОГОВОР</button>
 </form>
 {% endif %}
@@ -27,6 +50,7 @@
         <div>
             <strong>Договор № {{ c.contract.number }}</strong>
             — {{ c.contract.start_date }} {{ "— " ~ c.contract.end_date|string if c.contract.end_date else "(бессрочный / действующий)" }}
+            {% if c.contract.principal %}<br><span style="font-size:13px;color:var(--text-muted)">Принципал: <strong>{{ c.contract.principal.full_name }}</strong></span>{% endif %}
         </div>
         <div>
             {% if c.contract.currency_control_registered %}
