@@ -298,10 +298,12 @@ def _contract_for_write(db: Session, agent: Agent, start_date: date | None = Non
 
 
 def _set_agent_contract_number(db: Session, agent: Agent, value) -> None:
+    # Проверка пустого значения — ДО _contract_for_write: иначе любое сохранение
+    # формы агента (даже правка названия) создавало бы пустой договор «—».
     text = (value or "").strip()
-    contract = _contract_for_write(db, agent)
     if not text:
-        return  # пустой номер не затирает уже введённый
+        return
+    contract = _contract_for_write(db, agent)
     contract.number = text
 
 
@@ -314,6 +316,13 @@ def _set_agent_contract_date(db: Session, agent: Agent, value) -> None:
 
 
 def _set_agent_currency_control(db: Session, agent: Agent, value) -> None:
+    # Чекбокс приходит при каждом сохранении формы (в отличие от текстовых полей,
+    # которые при отсутствии в форме пропускаются). Поэтому сначала сравниваем
+    # с текущим значением: если договора нет и галочка не отмечена — это не
+    # «снятие отметки», а «ничего не задано», договор создавать не нужно.
+    current = _active_contract(agent)
+    if current is None and not value:
+        return
     contract = _contract_for_write(db, agent)
     contract.currency_control_registered = bool(value)
 
