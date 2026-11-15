@@ -63,6 +63,13 @@ class ReferenceField:
     setter: Callable[[Session, Any, Any], None] | None = None
     # Сущность, в которую пишет setter — для записи в аудит (entity_type).
     writes_to: str | None = None
+    # Когда поле нельзя править из общего справочника (вычисляется по записи
+    # и её связанным данным). Пример: у агента несколько действующих договоров —
+    # непонятно, в какой писать, поэтому править нужно на карточке агента.
+    # Проверяется и в шаблоне (скрыть ввод), и на сервере (не доверять форме).
+    readonly_if: Callable[[Any], bool] | None = None
+    # Подсказка, которая показывается вместо поля, когда оно стало readonly.
+    readonly_hint: str | None = None
 
 
 @dataclass
@@ -261,6 +268,18 @@ def _active_contract(obj: Agent):
     return max(active, key=lambda c: c.start_date)
 
 
+def _agent_contracts_ambiguous(obj: Agent) -> bool:
+    """True, если у агента больше одного действующего договора.
+
+    Тогда правка «№ договора / Дата / Валютный контроль» из общего справочника
+    неоднозначна: непонятно, в какой из договоров писать. Поля становятся
+    readonly, править нужно на карточке агента (/agents/{id}), где виден каждый
+    договор отдельно.
+    """
+    today = date.today()
+    return len([c for c in (obj.contracts or []) if c.is_active_on(today)]) > 1
+
+
 def _agent_contract_number(obj: Agent):
     contract = _active_contract(obj)
     return contract.number if contract else None
@@ -427,13 +446,19 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             ReferenceField("contract_number", "№ договора", "str", virtual=True, max_length=100,
                            getter=_agent_contract_number, setter=_set_agent_contract_number,
                            writes_to="agent_contract",
+                           readonly_if=_agent_contracts_ambiguous,
+                           readonly_hint="У агента несколько действующих договоров — редактируйте на странице агента",
                            hint="Правит действующий договор; если договора нет — создаст его"),
             ReferenceField("contract_date", "Дата договора", "date", virtual=True,
                            getter=_agent_contract_date, setter=_set_agent_contract_date,
-                           writes_to="agent_contract"),
+                           writes_to="agent_contract",
+                           readonly_if=_agent_contracts_ambiguous,
+                           readonly_hint="У агента несколько действующих договоров — редактируйте на странице агента"),
             ReferenceField("currency_control", "Поставлен на валютный контроль", "bool", virtual=True,
                            getter=_agent_currency_control, setter=_set_agent_currency_control,
-                           writes_to="agent_contract"),
+                           writes_to="agent_contract",
+                           readonly_if=_agent_contracts_ambiguous,
+                           readonly_hint="У агента несколько действующих договоров — редактируйте на странице агента"),
         ],
         relations=[Agent.contracts],
         usage_check=_agent_usage,
@@ -618,6 +643,10 @@ def apply_virtual(db: Session, spec: ReferenceSpec, obj: Any, virtual_values: di
     for f in spec.fields:
         if f.name not in virtual_values or f.setter is None:
             continue
+        if f.readonly_if is not None and f.readonly_if(obj):
+            # Скрытия поля в шаблоне недостаточно: форму можно отправить напрямую.
+            # Правка неоднозначна — молча игнорируем, сообщение формирует роут.
+            continue
         before = f.getter(obj) if f.getter else None
         new_value = virtual_values[f.name]
         if before is None and not new_value:
@@ -633,6 +662,14 @@ def apply_virtual(db: Session, spec: ReferenceSpec, obj: Any, virtual_values: di
         if comparable_before != comparable_after:
             changes.append((f.name, str(comparable_before), str(comparable_after)))
     return changes, created_labels
+
+def readonly_virtual_fields(spec: ReferenceSpec, obj: Any) -> list[ReferenceField]:
+    """Виртуальные поля, которые сейчас нельзя править из справочника."""
+    return [
+        f for f in spec.fields
+        if f.virtual and f.setter is not None and f.readonly_if is not None and f.readonly_if(obj)
+    ]
+
 
 def validate_form(spec: ReferenceSpec, form: dict[str, str], existing: Any | None) -> ValidationResult:
     """Приводит данные формы к значениям модели с проверкой типов и обязательности."""

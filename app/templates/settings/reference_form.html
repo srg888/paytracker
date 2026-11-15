@@ -15,7 +15,18 @@
       action="{{ ('/settings/references/' ~ spec.key ~ '/' ~ obj[spec.pk_field] ~ '/update') if obj else ('/settings/references/' ~ spec.key ~ '/create') }}">
 
     {% for f in spec.fields %}
-        {% if f.virtual and f.setter is none %}
+        {% set locked = f.virtual and f.readonly_if is not none and obj and f.readonly_if(obj) %}
+        {% if locked %}
+        {#- Неоднозначная правка (например, у агента несколько действующих
+            договоров): показываем значение, но не даём менять — править нужно
+            на странице агента. Сервер такую правку тоже отклонит. -#}
+        <label>{{ f.label }}</label>
+        <input type="text" value="{{ form.get(f.name) if form.get(f.name) is not none else '—' }}"
+               readonly disabled class="ref-virtual">
+        <p class="ref-field-hint">{{ f.readonly_hint }}
+            {% if spec.key == 'agents' %}<a href="/agents/{{ obj.id }}">Открыть карточку агента</a>{% endif %}
+        </p>
+        {% elif f.virtual and f.setter is none %}
         {#- Виртуальное поле только для показа: вычисляется из связанных данных,
             правится на своей странице. -#}
         <label>{{ f.label }}</label>
