@@ -22,11 +22,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.agent import Agent
 from app.models.agent_contract import AgentContract
+from app.models.audit_log import AuditLog
 from app.models.buyer_company import BuyerCompany
 from app.models.currency import Currency, ExchangeRate
 from app.models.document import RequestDocument, RequestDocumentRequirement
+from app.models.delegation import Delegation
 from app.models.document_type import DocumentType
 from app.models.division import Division
+from app.models.enums import UserRole
+from app.models.user import User
 
 # Отложенный импорт Request делаем внутри функций проверки: модуль импортируется
 # из main.py, а Request тянет за собой почти все модели — так избегаем циклов.
@@ -44,6 +48,11 @@ class ReferenceField:
     max_length: int | None = None
     choices: list[tuple[str, str]] = field(default_factory=list)  # для enum: (значение, подпись)
     hint: str | None = None
+    # HTML-тип поля ввода для str: "text" | "email" | "tel"
+    input_type: str = "text"
+    # Значение, которым поле заполняется в форме СОЗДАНИЯ (например, «Активен»
+    # по умолчанию включён, чтобы новая запись сразу была рабочей).
+    default: Any = None
     # Поле не хранится в колонке модели справочника, а вычисляется из связанных
     # данных (пример: действующий договор агента из agent_contracts).
     virtual: bool = False
@@ -71,12 +80,43 @@ class ReferenceSpec:
     usage_label: str = "записях"
     # можно ли вместо удаления предложить деактивацию
     deactivate_field: str | None = None
+    # удаление запрещено полностью. Для пользователей: на них ссылаются заявки,
+    # договоры, делегирования и журнал аудита (FK users.* — NO ACTION), поэтому
+    # вместо удаления доступна только деактивация.
+    delete_blocked: bool = False
     # краткое описание для экрана списка справочников
     description: str = ""
     order_by: str | None = None
+    # Поле, которым запись подписывается в сообщениях и в колонке «Запись».
+    # Нужно там, где первичный ключ — суррогатный id (пользователи): иначе
+    # сообщение выглядело бы как «Удалено: 4».
+    title_field: str | None = None
     # связи, подгружаемые заранее (selectinload) — иначе виртуальные поля
     # вроде «действующий договор» дают по запросу на каждую строку таблицы
     relations: list[Any] = field(default_factory=list)
+    # Доступ только Руководителю (и действующему делегату). Управление
+    # пользователями — это администрирование прав, а не работа со справочными
+    # данными, поэтому Исполнителю туда нельзя.
+    rukovoditel_only: bool = False
+    # Есть ли CSV-импорт: если нет — кнопка «CSV» на странице не показывается
+    csv_import: bool = True
+    # Проверки перед изменением/удалением (возвращают список ошибок).
+    # Второй аргумент — тот, кто совершает действие.
+    guard_update: Callable[[Session, Any, Any, dict[str, Any]], list[str]] | None = None
+    guard_delete: Callable[[Session, Any, Any], list[str]] | None = None
+    # Поле, которое представляет запись в первой колонке таблицы. Если задано,
+    # оно не дублируется отдельной колонкой (у пользователей это ФИО).
+    identity_field: str | None = None
+    # Массовое удаление для справочника отключено, если False.
+    bulk_delete: bool = True
+    # Менять записи может только Руководитель (управление пользователями —
+    # это выдача прав, а вход в систему без пароля, поэтому Исполнителю нельзя).
+    rukovoditel_only: bool = False
+    # Дополнительная проверка перед удалением/деактивацией:
+    # (db, объект, кто_действует) -> текст ошибки или None.
+    guard_delete: Callable[[Session, Any, Any], str | None] | None = None
+    # Дополнительная проверка перед сохранением правки: (db, объект, кто, новые значения).
+    guard_update: Callable[[Session, Any, Any, dict[str, Any]], str | None] | None = None
 
 
 def _count_requests_by(model_name: str, **conditions) -> Callable[[Session, Any], int]:
@@ -155,6 +195,58 @@ def _document_type_usage(db: Session, obj: Any) -> int:
     return docs + reqs
 
 
+def _user_usage(db: Session, obj: User) -> int:
+    """Сколько заявок связано с пользователем (создал, заказчик, исполнитель).
+
+    Считаем именно заявки, а не строки аудита: аудит — append-only журнал, он
+    ссылается на пользователя всегда и не должен блокировать удаление учётной
+    записи. Дополнительные блокирующие связи (договоры как принципал, записи
+    исполнений, делегирования) проверяются отдельно — см. _user_blockers.
+    """
+    from app.models.request import Request
+
+    return db.query(func.count(Request.id)).filter(
+        or_(
+            Request.created_by_id == obj.id,
+            Request.requester_id == obj.id,
+            Request.executor_id == obj.id,
+        )
+    ).scalar() or 0
+
+
+def _user_blockers(db: Session, obj: User) -> list[str]:
+    """Связи, которые нельзя разорвать удалением пользователя.
+
+    Внешние ключи в БД объявлены как NO ACTION (без ON DELETE), поэтому удаление
+    пользователя, на которого ссылаются эти таблицы, упадёт на уровне Postgres.
+    Проверяем заранее и показываем понятное сообщение вместо ошибки БД.
+    """
+    from app.models.agent_contract import AgentContract
+    from app.models.delegation import Delegation
+    from app.models.payment_execution import PaymentExecution
+    from app.models.payment_terms_proposal import PaymentTermsProposal
+    from app.models.report import Report
+    from app.models.status_history import RequestStatusHistory
+
+    checks = [
+        ("договорах агентов как принципал", AgentContract.principal_id),
+        ("делегированиях", Delegation.delegate_id),
+        ("делегированиях", Delegation.delegator_id),
+        ("записях исполнений", PaymentExecution.created_by_id),
+        ("предложениях условий", PaymentTermsProposal.proposed_by_id),
+        ("предложениях условий", PaymentTermsProposal.decided_by_id),
+        ("отчётах", Report.created_by_id),
+        ("истории статусов", RequestStatusHistory.changed_by_id),
+    ]
+    found: list[str] = []
+    for label, column in checks:
+        model = column.class_
+        count = db.query(func.count(column)).filter(column == obj.id).scalar() or 0
+        if count and label not in found:
+            found.append(label)
+    return found
+
+
 def _active_contract(obj: Agent):
     """Действующий договор агента на сегодня — для показа в справочнике.
 
@@ -226,6 +318,45 @@ def _set_agent_currency_control(db: Session, agent: Agent, value) -> None:
     contract.currency_control_registered = bool(value)
 
 
+def _other_active_rukovoditels(db: Session, exclude_id: int) -> int:
+    return (
+        db.query(func.count(User.id))
+        .filter(
+            User.id != exclude_id,
+            User.role == UserRole.RUKOVODITEL,
+            User.is_active.is_(True),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _users_guard_delete(db: Session, obj: User, acting: User) -> str | None:
+    """Нельзя удалить/деактивировать себя и последнего активного Руководителя."""
+    if obj.id == acting.id:
+        return "Нельзя удалить или деактивировать собственную учётную запись."
+    if obj.role == UserRole.RUKOVODITEL and _other_active_rukovoditels(db, obj.id) == 0:
+        return "Это единственный активный Руководитель — удалить или отключить его нельзя."
+    return None
+
+
+def _users_guard_update(db: Session, obj: User, acting: User, values: dict[str, Any]) -> str | None:
+    """Нельзя снять роль Руководителя с последнего активного Руководителя
+    и нельзя отключить самого себя."""
+    role_now = getattr(obj.role, "value", obj.role)
+    role_new = values.get("role", role_now)
+    active_new = values.get("is_active", obj.is_active)
+
+    if not active_new and obj.id == acting.id:
+        return "Нельзя отключить собственную учётную запись."
+    losing_ruk = role_now == UserRole.RUKOVODITEL.value and (
+        role_new != UserRole.RUKOVODITEL.value or not active_new
+    )
+    if losing_ruk and _other_active_rukovoditels(db, obj.id) == 0:
+        return "Это единственный активный Руководитель — снять роль или отключить его нельзя."
+    return None
+
+
 REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
     "divisions": ReferenceSpec(
         key="divisions",
@@ -236,7 +367,7 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
         order_by="name",
         fields=[
             ReferenceField("name", "Название", "str", required=True, max_length=255),
-            ReferenceField("is_active", "Активно", "bool"),
+            ReferenceField("is_active", "Активно", "bool", default=True),
         ],
         usage_check=_count_requests_by("request", division_id="id"),
         usage_label="заявках",
@@ -252,7 +383,7 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
         fields=[
             ReferenceField("code", "Код ISO 4217", "str", required=True, max_length=3,
                            hint="Три латинские буквы: USD, EUR, CNY"),
-            ReferenceField("is_active", "Активна", "bool"),
+            ReferenceField("is_active", "Активна", "bool", default=True),
         ],
         usage_check=_currency_usage,
         usage_label="заявках и курсах",
@@ -267,7 +398,7 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
         order_by="name",
         fields=[
             ReferenceField("name", "Название", "str", required=True, max_length=255),
-            ReferenceField("is_active", "Активна", "bool"),
+            ReferenceField("is_active", "Активна", "bool", default=True),
             ReferenceField("recipient_service", "Служба-получатель", "str", max_length=255,
                            hint="Необязательно: внутренняя служба"),
         ],
@@ -286,7 +417,7 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             ReferenceField("code", "Код", "str", required=True, max_length=32),
             ReferenceField("name", "Название", "str", max_length=255),
             ReferenceField("is_resident", "Резидент", "bool"),
-            ReferenceField("is_active", "Активен", "bool"),
+            ReferenceField("is_active", "Активен", "bool", default=True),
             ReferenceField("is_own_company", "Наша компания", "bool"),
             # БР-131: договор агента — отдельная таблица (у агента их может быть
             # несколько), поэтому здесь только показ действующего договора.
@@ -325,11 +456,38 @@ REFERENCE_REGISTRY: dict[str, ReferenceSpec] = {
             ]),
             ReferenceField("is_required_default", "Обязателен по умолчанию", "bool"),
             ReferenceField("recipient_service", "Служба-получатель", "str", max_length=128),
-            ReferenceField("is_active", "Активен", "bool"),
+            ReferenceField("is_active", "Активен", "bool", default=True),
         ],
         usage_check=_document_type_usage,
         usage_label="документах и требованиях",
         deactivate_field="is_active",
+    ),
+    "users": ReferenceSpec(
+        key="users",
+        label="Пользователи",
+        model=User,
+        pk_field="id",
+        description="Руководитель, исполнители и заказчики (принципалы договоров)",
+        order_by="full_name",
+        fields=[
+            ReferenceField("full_name", "ФИО / название", "str", required=True, max_length=255,
+                           hint="Для заказчика — название компании-принципала"),
+            ReferenceField("email", "Email", "str", required=True, max_length=255),
+            ReferenceField("telegram_id", "Telegram ID", "str", max_length=64,
+                           hint="Необязательно"),
+            ReferenceField("role", "Роль", "enum", required=True, choices=[
+                (UserRole.RUKOVODITEL.value, "Руководитель"),
+                (UserRole.ISPOLNITEL.value, "Исполнитель"),
+                (UserRole.ZAKAZCHIK.value, "Заказчик"),
+            ]),
+            ReferenceField("is_active", "Активен", "bool", default=True),
+        ],
+        usage_check=_user_usage,
+        usage_label="заявках, договорах, делегированиях и аудите",
+        deactivate_field="is_active",
+        rukovoditel_only=True,
+        guard_delete=_users_guard_delete,
+        guard_update=_users_guard_update,
     ),
 }
 
@@ -395,8 +553,13 @@ def display_value(obj: Any, f: ReferenceField) -> str:
 
 
 def describe_object(spec: ReferenceSpec, obj: Any) -> str:
-    """Короткое имя записи для сообщений («Удалено: АП») и подсказок."""
-    for name in (spec.pk_field, "name", "code"):
+    """Короткое имя записи для сообщений («Удалено: АП») и подсказок.
+
+    pk_field в списке первым — это запасной вариант: у большинства справочников
+    он текстовый и осмысленный (код). Но у пользователей ключ числовой, поэтому
+    человекочитаемые поля проверяются до него.
+    """
+    for name in ("full_name", "name", "code", spec.pk_field):
         for f in spec.fields:
             if f.name == name:
                 value = getattr(obj, name, None)

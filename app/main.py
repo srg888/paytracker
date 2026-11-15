@@ -2183,6 +2183,9 @@ def settings_references_list(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse("/requests")
     items = []
     for spec in refs.REFERENCE_REGISTRY.values():
+        # справочники уровня «выдача прав» (пользователи) Исполнителю не показываем
+        if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+            continue
         items.append({
             "spec": spec,
             "count": db.query(spec.model).count(),
@@ -2199,6 +2202,9 @@ def settings_reference_view(request: Request, key: str, db: Session = Depends(ge
     spec = refs.get_spec(key)
     if not spec:
         flash(request, "Неизвестный справочник.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+    if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
         return RedirectResponse("/settings/references", status_code=303)
 
     objects = refs.list_objects(db, spec)
@@ -2225,7 +2231,13 @@ def settings_reference_new_form(request: Request, key: str, db: Session = Depend
     spec = refs.get_spec(key)
     if not spec:
         return RedirectResponse("/settings/references", status_code=303)
-    return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form={}, errors=[])
+    if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
+    # новые записи создаются активными: чекбокс «Активен» в пустой форме иначе
+    # оказался бы снят, и запись сразу была бы нерабочей
+    form = {f.name: f.default for f in spec.fields if f.default is not None}
+    return render(request, "settings/reference_form.html", db, spec=spec, obj=None, form=form, errors=[])
 
 
 @app.post("/settings/references/{key}/create")
@@ -2236,6 +2248,9 @@ async def settings_reference_create(request: Request, key: str, db: Session = De
     spec = refs.get_spec(key)
     if not spec:
         return RedirectResponse("/settings/references", status_code=303)
+    if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
+        return RedirectResponse(f"/settings/references/{key}", status_code=303)
 
     form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
     result = refs.validate_form(spec, form, existing=None)
@@ -2271,6 +2286,9 @@ def settings_reference_edit_form(request: Request, key: str, pk: str, db: Sessio
     if not user:
         return RedirectResponse("/requests")
     spec = refs.get_spec(key)
+    if spec and spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
     obj = refs.find_object(db, spec, pk) if spec else None
     if not spec or not obj:
         flash(request, "Запись не найдена.", "error")
@@ -2292,9 +2310,17 @@ async def settings_reference_update(request: Request, key: str, pk: str, db: Ses
         flash(request, "Запись не найдена.", "error")
         return RedirectResponse("/settings/references", status_code=303)
 
+    if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
+        return RedirectResponse(f"/settings/references/{key}", status_code=303)
+
     form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
     result = refs.validate_form(spec, form, existing=obj)
     errors = list(result.errors) + refs.check_unique(db, spec, result.values, existing=obj)
+    if spec.guard_update:
+        guard_error = spec.guard_update(db, obj, user, result.values)
+        if guard_error:
+            errors.append(guard_error)
     if errors:
         return render(request, "settings/reference_form.html", db, spec=spec, obj=obj, form=form,
                       errors=errors, status_code=400)
@@ -2329,8 +2355,12 @@ async def settings_reference_update(request: Request, key: str, pk: str, db: Ses
 
 def _delete_reference_object(db: Session, user: User, spec, obj) -> tuple[bool, str]:
     """Удаление одной записи с защитой от использования. Возвращает (удалено, сообщение)."""
-    used = refs.usage_count(db, spec, obj)
     name = refs.describe_object(spec, obj)
+    if spec.guard_delete:
+        blocked = spec.guard_delete(db, obj, user)
+        if blocked:
+            return False, blocked
+    used = refs.usage_count(db, spec, obj)
     if used:
         if spec.deactivate_field:
             setattr(obj, spec.deactivate_field, False)
@@ -2351,6 +2381,9 @@ def settings_reference_delete(request: Request, key: str, pk: str, db: Session =
     if not user:
         return RedirectResponse("/requests")
     spec = refs.get_spec(key)
+    if spec and spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
+        return RedirectResponse("/settings/references", status_code=303)
     obj = refs.find_object(db, spec, pk) if spec else None
     if not spec or not obj:
         flash(request, "Запись не найдена.", "error")
@@ -2370,6 +2403,9 @@ async def settings_reference_bulk_delete(request: Request, key: str, db: Session
         return RedirectResponse("/requests")
     spec = refs.get_spec(key)
     if not spec:
+        return RedirectResponse("/settings/references", status_code=303)
+    if spec.rukovoditel_only and user.role != UserRole.RUKOVODITEL:
+        flash(request, "Раздел доступен только Руководителю.", "error")
         return RedirectResponse("/settings/references", status_code=303)
 
     form = await request.form()
