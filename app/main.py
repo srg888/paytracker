@@ -2340,14 +2340,20 @@ async def settings_reference_update(request: Request, key: str, pk: str, db: Ses
                          field_name=name, old_value=str(comparable_old), new_value=str(new_value))
 
     # виртуальные поля пишутся в связанную сущность (например в договор агента)
-    for name, old_value, new_value in refs.apply_virtual(db, spec, obj, virtual):
+    virtual_changes, created = refs.apply_virtual(db, spec, obj, virtual)
+    for name, old_value, new_value in virtual_changes:
         changes.append((name, old_value, new_value))
         _audit_reference(db, user, AuditActionType.REFERENCE_UPDATED, spec, obj,
                          field_name=name, old_value=old_value, new_value=new_value)
 
     if changes:
         db.commit()
-        flash(request, f"Запись «{refs.describe_object(spec, obj)}» обновлена (полей изменено: {len(changes)}).")
+        message = f"Запись «{refs.describe_object(spec, obj)}» обновлена (полей изменено: {len(changes)})."
+        if created:
+            # связанная запись появилась как следствие правки — говорим прямо
+            message += (f" Дополнительно создана связанная запись (договор с номером «—»),"
+                        f" чтобы сохранить: {', '.join(created)}. Проверьте её на карточке агента.")
+        flash(request, message)
     else:
         flash(request, "Изменений нет.")
     return RedirectResponse(f"/settings/references/{key}", status_code=303)

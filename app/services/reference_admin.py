@@ -298,13 +298,11 @@ def _contract_for_write(db: Session, agent: Agent, start_date: date | None = Non
 
 
 def _set_agent_contract_number(db: Session, agent: Agent, value) -> None:
-    # Проверка пустого значения — ДО _contract_for_write: иначе любое сохранение
-    # формы агента (даже правка названия) создавало бы пустой договор «—».
-    text = (value or "").strip()
-    if not text:
-        return
+    # Пустое значение сюда не доходит — отсекается общим guard'ом в apply_virtual
     contract = _contract_for_write(db, agent)
-    contract.number = text
+    text = (value or "").strip()
+    if text:
+        contract.number = text
 
 
 def _set_agent_contract_date(db: Session, agent: Agent, value) -> None:
@@ -316,13 +314,8 @@ def _set_agent_contract_date(db: Session, agent: Agent, value) -> None:
 
 
 def _set_agent_currency_control(db: Session, agent: Agent, value) -> None:
-    # Чекбокс приходит при каждом сохранении формы (в отличие от текстовых полей,
-    # которые при отсутствии в форме пропускаются). Поэтому сначала сравниваем
-    # с текущим значением: если договора нет и галочка не отмечена — это не
-    # «снятие отметки», а «ничего не задано», договор создавать не нужно.
-    current = _active_contract(agent)
-    if current is None and not value:
-        return
+    # Отметка «снять галочку у несуществующего договора» сюда не доходит —
+    # её отсекает общий guard в apply_virtual
     contract = _contract_for_write(db, agent)
     contract.currency_control_registered = bool(value)
 
@@ -600,23 +593,46 @@ def split_values(spec: ReferenceSpec, values: dict[str, Any]) -> tuple[dict[str,
     return stored, virtual
 
 
-def apply_virtual(db: Session, spec: ReferenceSpec, obj: Any, virtual_values: dict[str, Any]) -> list[tuple[str, str | None, str | None]]:
+def apply_virtual(db: Session, spec: ReferenceSpec, obj: Any, virtual_values: dict[str, Any]) -> tuple[list[tuple[str, str | None, str | None]], list[str]]:
     """Применяет значения виртуальных полей через их setter'ы.
 
-    Возвращает список изменений (имя поля, было, стало) — для сообщения и аудита.
+    Возвращает (изменения, поля, из-за которых создана связанная запись).
+    Изменения — список (имя поля, было, стало) для сообщения и аудита.
+
+    Здесь же — общий guard от «пустого» намерения. Виртуальные поля агента
+    (номер договора, дата, отметка валютного контроля) пишут в отдельную
+    таблицу agent_contracts, создавая договор при его отсутствии. Но форма
+    присылает ВСЕ свои поля при каждом сохранении — в том числе пустые, а
+    чекбокс вообще приходит всегда (bool-поля не пропускаются, чтобы не терять
+    снятую галочку). Без этой проверки правка любого поля агента (например,
+    названия) молча создавала бы договор с номером «—».
+
+    Правило: если связанной записи ещё нет, а значение пустое (None, "",
+    False) — это «поле не трогали», а не «установить пустое». Явное непустое
+    значение (номер, дата, отмеченная галочка) по-прежнему создаёт договор.
+    Проверка стоит здесь, а не в каждом setter'е, чтобы новое виртуальное поле
+    получало защиту автоматически.
     """
     changes: list[tuple[str, str | None, str | None]] = []
+    created_labels: list[str] = []
     for f in spec.fields:
         if f.name not in virtual_values or f.setter is None:
             continue
         before = f.getter(obj) if f.getter else None
-        f.setter(db, obj, virtual_values[f.name])
+        new_value = virtual_values[f.name]
+        if before is None and not new_value:
+            continue  # связанной записи нет и значение пустое — менять нечего
+        f.setter(db, obj, new_value)
         after = f.getter(obj) if f.getter else None
+        if before is None and after is not None:
+            # setter завёл связанную запись (договор) — сообщим об этом явно,
+            # иначе непонятно, откуда взялся договор с номером «—»
+            created_labels.append(f.label)
         comparable_before = getattr(before, "isoformat", lambda: before)()
         comparable_after = getattr(after, "isoformat", lambda: after)()
         if comparable_before != comparable_after:
             changes.append((f.name, str(comparable_before), str(comparable_after)))
-    return changes
+    return changes, created_labels
 
 def validate_form(spec: ReferenceSpec, form: dict[str, str], existing: Any | None) -> ValidationResult:
     """Приводит данные формы к значениям модели с проверкой типов и обязательности."""
