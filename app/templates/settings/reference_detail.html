@@ -43,6 +43,13 @@
             </td>
             <td class="ref-actions">
                 <a class="ref-edit" href="/settings/references/{{ spec.key }}/{{ row.pk }}/edit" title="Редактировать">&#9998;</a>
+                {% if spec.key == "users" %}
+                <form method="post" action="/settings/references/users/{{ row.pk }}/reset_password" style="display:inline"
+                      onsubmit="var p = prompt('Новый пароль (не короче 8 символов) для {{ row.head }}:'); if (!p || p.length < 8) { alert('Пароль должен быть не короче 8 символов.'); return false; } this.querySelector('input[name=new_password]').value = p; return confirm('Сбросить пароль для {{ row.head }}?');">
+                    <input type="hidden" name="new_password" value="">
+                    <button type="submit" class="ref-edit" title="Сбросить пароль" style="background:none;border:none;cursor:pointer;">&#128273;</button>
+                </form>
+                {% endif %}
             </td>
         </tr>
         {% endfor %}

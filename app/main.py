@@ -31,7 +31,7 @@ from app.models.comment import RequestComment
 from app.models.delegation import Delegation
 from app.models.user import User
 from app.security import flash, get_current_user, pop_flash
-from app.services import status_machine, import_refs, reference_admin as refs, agent_analytics
+from app.services import status_machine, import_refs, reference_admin as refs, agent_analytics, auth
 from app.services.import_refs import ImportError_
 from app.services.documents import available_document_types, document_category_for_request, missing_required_documents
 from app.services.exchange_rate import get_rate_for_today
@@ -291,7 +291,20 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="PayTracker MVP", lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=_get_session_secret())
+# https_only=True в production: без него сессионная кука уходит и по обычному
+# http, что при внешнем доступе (не только локальная сеть) недопустимо —
+# кука тогда может утечь по открытому Wi-Fi/прокси, даже если сам сайт на HTTPS.
+# same_site="lax" (не "strict"): "strict" ломает переход по ссылке на PayTracker
+# из внешнего письма/мессенджера на первый заход (кука не отправится) — "lax"
+# всё ещё не даёт куке уйти с чужого сайта через автоматическую форму (CSRF),
+# но пропускает обычный переход по ссылке.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_get_session_secret(),
+    https_only=os.getenv("ENVIRONMENT", "development") == "production",
+    same_site="lax",
+    max_age=8 * 60 * 60,  # 8 часов — автоматический разлогин по истечении сессии
+)
 app.mount("/static", StaticFiles(directory=os.path.join(APP_DIR, "static")), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 templates = Jinja2Templates(directory=os.path.join(APP_DIR, "templates"))
@@ -444,28 +457,54 @@ def index():
 
 @app.get("/login")
 def login_page(request: Request, db: Session = Depends(get_db)):
-    users = db.query(User).order_by(User.role, User.full_name).all()
-    return render(request, "login.html", db, users=users)
+    """БЫЛО: выбор пользователя из списка без пароля (MVP-заглушка, см.
+    AGENTS.md). Список пользователей на экране входа был сам по себе утечкой —
+    любой, кто открыл /login, сразу видел, кто Руководитель."""
+    return render(request, "login.html", db)
 
 
-@app.get("/login/{user_id}")
-def login_as(request: Request, user_id: int, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
-    if not user:
-        return RedirectResponse("/login")
-    # BR-002: неактивный пользователь не может входить в систему
-    if not user.is_active:
-        flash(request, "Учётная запись деактивирована. Обратитесь к администратору.", "error")
-        return RedirectResponse("/login")
+@app.post("/login")
+def login_submit(request: Request, db: Session = Depends(get_db), email: str = Form(...), password: str = Form(...)):
+    client_ip = request.client.host if request.client else None
+    user = db.query(User).filter(User.email == email.strip().lower()).first()
+
+    # Намеренно: при любом провале (нет такого email, деактивирован, нет
+    # пароля, пароль не задан, заблокирован, неверный пароль) — один и тот же
+    # текст ошибки, без уточнения, что именно не так. Иначе форма входа сама
+    # подсказывает атакующему, какие email вообще существуют в системе
+    # (user enumeration) — это ценная информация в компании из нескольких
+    # человек, где по email легко восстановить ФИО.
+    generic_error = "Неверный email или пароль."
+
+    if not user or not user.is_active or not user.password_hash:
+        flash(request, generic_error, "error")
+        return RedirectResponse("/login", status_code=303)
+
+    if auth.is_locked(user):
+        minutes = max(1, auth.lockout_remaining_seconds(user) // 60)
+        flash(request, f"Слишком много неудачных попыток. Попробуйте снова через {minutes} мин.", "error")
+        return RedirectResponse("/login", status_code=303)
+
+    if not auth.verify_password(password, user.password_hash):
+        auth.record_failed_attempt(db, user)
+        db.add(AuditLog(
+            entity_type="user", entity_id=user.id, user_id=user.id,
+            action_type=AuditActionType.LOGIN_FAILED,
+            new_value=f"ip={client_ip}; попыток подряд={user.failed_login_count}",
+        ))
+        db.commit()
+        flash(request, generic_error, "error")
+        return RedirectResponse("/login", status_code=303)
+
+    auth.record_successful_login(user)
+    request.session.clear()
     request.session["user_id"] = user.id
     db.add(AuditLog(
-        entity_type="user",
-        entity_id=user.id,
-        user_id=user.id,
-        action_type=AuditActionType.LOGIN,
+        entity_type="user", entity_id=user.id, user_id=user.id,
+        action_type=AuditActionType.LOGIN, new_value=f"ip={client_ip}",
     ))
     db.commit()
-    return RedirectResponse("/requests")
+    return RedirectResponse("/requests", status_code=303)
 
 
 @app.get("/logout")
@@ -482,6 +521,62 @@ def logout(request: Request, db: Session = Depends(get_db)):
         ))
         db.commit()
     return RedirectResponse("/login")
+
+
+@app.get("/account/change_password")
+def change_password_form(request: Request, db: Session = Depends(get_db)):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    return render(request, "change_password.html", db)
+
+
+@app.post("/account/change_password")
+def change_password_submit(
+    request: Request, db: Session = Depends(get_db),
+    current_password: str = Form(...), new_password: str = Form(...), new_password_confirm: str = Form(...),
+):
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse("/login")
+    if not user.password_hash or not auth.verify_password(current_password, user.password_hash):
+        flash(request, "Текущий пароль неверен.", "error")
+        return RedirectResponse("/account/change_password", status_code=303)
+    if new_password != new_password_confirm:
+        flash(request, "Новый пароль и подтверждение не совпадают.", "error")
+        return RedirectResponse("/account/change_password", status_code=303)
+    if len(new_password) < 8:
+        flash(request, "Новый пароль должен быть не короче 8 символов.", "error")
+        return RedirectResponse("/account/change_password", status_code=303)
+    user.password_hash = auth.hash_password(new_password)
+    db.add(AuditLog(entity_type="user", entity_id=user.id, user_id=user.id, action_type=AuditActionType.FIELD_CHANGE,
+                     field_name="password_hash", old_value="(изменён пользователем)", new_value=None))
+    db.commit()
+    flash(request, "Пароль изменён.")
+    return RedirectResponse("/requests", status_code=303)
+
+
+@app.post("/settings/references/users/{user_id}/reset_password")
+def reset_user_password(request: Request, user_id: int, db: Session = Depends(get_db), new_password: str = Form(...)):
+    """Сброс пароля другому пользователю — только Руководитель (по аналогии
+    с BR-018: это административное действие, не рабочее). Пароль сообщается
+    человеку устно/в мессенджере — рассылки email в системе нет."""
+    acting = _require_rukovoditel(request, db)
+    if not acting:
+        return RedirectResponse("/settings/references/users", status_code=303)
+    target = db.get(User, user_id)
+    if not target:
+        return RedirectResponse("/settings/references/users", status_code=303)
+    if len(new_password) < 8:
+        flash(request, "Пароль должен быть не короче 8 символов.", "error")
+        return RedirectResponse("/settings/references/users", status_code=303)
+    target.password_hash = auth.hash_password(new_password)
+    auth.record_successful_login(target)  # заодно снимаем блокировку, если была
+    db.add(AuditLog(entity_type="user", entity_id=target.id, user_id=acting.id, action_type=AuditActionType.FIELD_CHANGE,
+                     field_name="password_hash", old_value="(сброшен Руководителем)", new_value=None))
+    db.commit()
+    flash(request, f"Пароль для {target.full_name} сброшен.")
+    return RedirectResponse("/settings/references/users", status_code=303)
 
 
 def require_login(request: Request, db: Session):

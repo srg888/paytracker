@@ -1,11 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Вход — PayTracker{% endblock %}
 {% block content %}
-<h2>Войти как...</h2>
-<p>MVP-заглушка авторизации: без пароля, просто выбор пользователя. В проде — заменить на настоящий auth.</p>
-<div class="login-list">
-    {% for u in users %}
-    <a class="btn" href="/login/{{ u.id }}">{{ u.full_name }} <span class="badge">{{ u.role.value }}</span></a>
-    {% endfor %}
-</div>
+<h2>Вход</h2>
+<form method="post" action="/login" style="max-width:320px;">
+    <label>Email<br><input type="email" name="email" required autofocus autocomplete="username"></label><br><br>
+    <label>Пароль<br><input type="password" name="password" required autocomplete="current-password"></label><br><br>
+    <button type="submit" class="btn">Войти</button>
+</form>
 {% endblock %}

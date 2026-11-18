@@ -80,6 +80,7 @@ class AuditActionType(str, enum.Enum):
     MANAGER_EDITED_REQUEST = "manager_edited_request"
     REQUEST_IMPORTED = "request_imported"
     CURRENCY_CONTROL_THRESHOLD_TRIGGERED = "currency_control_threshold_triggered"
+    LOGIN_FAILED = "login_failed"
 
 
 class ExportFormat(str, enum.Enum):

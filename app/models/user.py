@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, String
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -17,6 +19,13 @@ class User(Base, TimestampMixin):
     telegram_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     role: Mapped[UserRole] = mapped_column(USER_ROLE_ENUM, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Аутентификация по паролю (заменяет прежний выбор пользователя из списка
+    # на /login — см. app/services/auth.py). NULL = пароль ещё не задан,
+    # вход невозможен (не "пароль пустой" — пустых паролей не бывает).
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Защита от перебора пароля (app/services/auth.py: LOCKOUT_SCHEDULE).
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_requests: Mapped[list["Request"]] = relationship(
         "Request", foreign_keys="Request.created_by_id", back_populates="created_by"
