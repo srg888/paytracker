@@ -25,11 +25,18 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?укажи SESSION_SECRET в .env}
       ENVIRONMENT: production
       UPLOAD_DIR: /app/uploads
+      # См. docker/entrypoint.sh — обязательно проверить/задать под вашу
+      # сетевую топологию, не оставлять значение по умолчанию вслепую.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     volumes:
       - .:/app
       - uploads_data:/app/uploads
     ports:
-      - "0.0.0.0:8000:8000"
+      # Порт приложения больше НЕ торчит наружу напрямую (было 0.0.0.0) —
+      # только с самого хоста, где должен стоять реверс-прокси (nginx/Xray).
+      # Внешний доступ — через прокси, который терминирует TLS и форвардит
+      # сюда; порт 8000 снаружи сервера быть недоступен не должен.
+      - "127.0.0.1:8000:8000"
 
 volumes:
   db_data:

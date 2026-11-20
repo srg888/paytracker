@@ -2,6 +2,7 @@ from app.db.base_class import Base
 from app.models.agent import Agent
 from app.models.agent_contract import AgentContract
 from app.models.audit_log import AuditLog
+from app.models.login_attempt import LoginAttempt
 from app.models.buyer_company import BuyerCompany
 from app.models.comment import RequestComment
 from app.models.currency import Currency, ExchangeRate
@@ -20,6 +21,7 @@ __all__ = [
     "Agent",
     "AgentContract",
     "AuditLog",
+    "LoginAttempt",
     "BuyerCompany",
     "RequestComment",
     "Currency",

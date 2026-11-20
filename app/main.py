@@ -476,27 +476,31 @@ def login_submit(request: Request, db: Session = Depends(get_db), email: str = F
     # человек, где по email легко восстановить ФИО.
     generic_error = "Неверный email или пароль."
 
-    if not user or not user.is_active or not user.password_hash:
-        flash(request, generic_error, "error")
-        return RedirectResponse("/login", status_code=303)
+    # Блокировка — по паре (аккаунт, IP), проверяется до сверки пароля и
+    # до любой записи попытки, чтобы не плодить бессмысленные записи, пока
+    # заблокировано. Если email не существует — блокировать нечего (нет
+    # аккаунта), просто считаем попытку неудачной ниже.
+    if user and user.is_active:
+        locked, remaining = auth.lockout_status(db, user.id, client_ip)
+        if locked:
+            minutes = max(1, remaining // 60)
+            flash(request, f"Слишком много неудачных попыток с этого адреса. Попробуйте снова через {minutes} мин.", "error")
+            return RedirectResponse("/login", status_code=303)
 
-    if auth.is_locked(user):
-        minutes = max(1, auth.lockout_remaining_seconds(user) // 60)
-        flash(request, f"Слишком много неудачных попыток. Попробуйте снова через {minutes} мин.", "error")
-        return RedirectResponse("/login", status_code=303)
+    password_ok = bool(user and user.is_active and user.password_hash and auth.verify_password(password, user.password_hash))
 
-    if not auth.verify_password(password, user.password_hash):
-        auth.record_failed_attempt(db, user)
-        db.add(AuditLog(
-            entity_type="user", entity_id=user.id, user_id=user.id,
-            action_type=AuditActionType.LOGIN_FAILED,
-            new_value=f"ip={client_ip}; попыток подряд={user.failed_login_count}",
-        ))
+    if not password_ok:
+        auth.record_attempt(db, user.id if user else None, client_ip, success=False)
+        if user:
+            db.add(AuditLog(
+                entity_type="user", entity_id=user.id, user_id=user.id,
+                action_type=AuditActionType.LOGIN_FAILED, new_value=f"ip={client_ip}",
+            ))
         db.commit()
         flash(request, generic_error, "error")
         return RedirectResponse("/login", status_code=303)
 
-    auth.record_successful_login(user)
+    auth.record_attempt(db, user.id, client_ip, success=True)
     request.session.clear()
     request.session["user_id"] = user.id
     db.add(AuditLog(
@@ -571,7 +575,8 @@ def reset_user_password(request: Request, user_id: int, db: Session = Depends(ge
         flash(request, "Пароль должен быть не короче 8 символов.", "error")
         return RedirectResponse("/settings/references/users", status_code=303)
     target.password_hash = auth.hash_password(new_password)
-    auth.record_successful_login(target)  # заодно снимаем блокировку, если была
+    # Блокировка теперь считается по журналу попыток (LoginAttempt), не по
+    # полю на User — сама "рассосётся" по расписанию, сбрасывать нечего.
     db.add(AuditLog(entity_type="user", entity_id=target.id, user_id=acting.id, action_type=AuditActionType.FIELD_CHANGE,
                      field_name="password_hash", old_value="(сброшен Руководителем)", new_value=None))
     db.commit()
@@ -580,8 +585,16 @@ def reset_user_password(request: Request, user_id: int, db: Session = Depends(ge
 
 
 def require_login(request: Request, db: Session):
+    """BR-002: деактивированный пользователь не может работать в системе —
+    проверка нужна на каждый запрос, не только в момент входа (см. разбор
+    DeepSeek: иначе деактивация в середине открытой сессии не действует
+    вплоть до истечения 8-часовой сессии)."""
     user = get_current_user(request, db)
     if not user:
+        return None
+    if not user.is_active:
+        request.session.clear()
+        flash(request, "Учётная запись деактивирована.", "error")
         return None
     return user
 

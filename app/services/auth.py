@@ -5,6 +5,14 @@
 Хеширование — argon2id (argon2-cffi), текущая рекомендация OWASP для новых
 систем (устойчивее bcrypt к атакам на GPU/ASIC за счёт требовательности
 к памяти, не только к процессору).
+
+Блокировка после перебора — по паре (аккаунт, IP), не по аккаунту целиком.
+Это сознательная правка после разбора: блокировка только по аккаунту
+позволяла держать ЕДИНСТВЕННОГО Руководителя без доступа сколько угодно
+долго — зная (или угадав по шаблону) его email, с любого IP, просто
+повторяя по одной неверной попытке сразу после истечения очередной
+блокировки. По паре аккаунт+IP: атакующий блокирует сам себя для этой
+пары, а настоящий Руководитель, заходя с другого IP, атаки не замечает.
 """
 from __future__ import annotations
 
@@ -14,17 +22,15 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHash
 from sqlalchemy.orm import Session
 
-from app.models.user import User
+from app.models.login_attempt import LoginAttempt
 
 _hasher = PasswordHasher()
 
-# Нарастающая блокировка после подряд идущих неудачных попыток: индекс —
-# (failed_login_count - LOCKOUT_FREE_ATTEMPTS), значение — минуты блокировки.
-# Первые 4 неудачные попытки блокировки не дают (ошибся — попробовал снова),
-# дальше задержка растёт, чтобы перебор пароля стал практически бессмысленным,
-# но не наказывал человека, который просто пару раз ошибся в раскладке.
+# Первые 4 неудачные попытки подряд (с одного IP, на один аккаунт) —
+# без последствий (ошибся раскладкой — попробовал снова), дальше задержка
+# растёт по расписанию.
 LOCKOUT_FREE_ATTEMPTS = 4
-LOCKOUT_SCHEDULE_MINUTES = [1, 5, 30, 60, 240]  # после 5-й, 6-й, 7-й... неудачи подряд
+LOCKOUT_SCHEDULE_MINUTES = [1, 5, 30, 60, 240]
 
 
 def hash_password(plain: str) -> str:
@@ -38,29 +44,47 @@ def verify_password(plain: str, password_hash: str) -> bool:
         return False
 
 
-def is_locked(user: User) -> bool:
-    return bool(user.locked_until and user.locked_until > datetime.now(timezone.utc))
+def record_attempt(db: Session, user_id: int | None, ip: str | None, success: bool) -> None:
+    db.add(LoginAttempt(user_id=user_id, ip=ip, success=success))
 
 
-def lockout_remaining_seconds(user: User) -> int:
-    if not user.locked_until:
-        return 0
-    delta = user.locked_until - datetime.now(timezone.utc)
-    return max(0, int(delta.total_seconds()))
+def _consecutive_failures(db: Session, user_id: int, ip: str | None) -> int:
+    """Число неудачных попыток для этой пары (аккаунт, IP) подряд с момента
+    последнего успешного входа с этого же IP (или с начала времён, если
+    успешных входов с этого IP ещё не было)."""
+    last_success = (
+        db.query(LoginAttempt.created_at)
+        .filter(LoginAttempt.user_id == user_id, LoginAttempt.ip == ip, LoginAttempt.success.is_(True))
+        .order_by(LoginAttempt.created_at.desc())
+        .first()
+    )
+    q = db.query(LoginAttempt).filter(
+        LoginAttempt.user_id == user_id, LoginAttempt.ip == ip, LoginAttempt.success.is_(False)
+    )
+    if last_success:
+        q = q.filter(LoginAttempt.created_at > last_success[0])
+    return q.count()
 
 
-def record_failed_attempt(db: Session, user: User) -> None:
-    """Увеличивает счётчик неудачных попыток и, если он превысил
-    LOCKOUT_FREE_ATTEMPTS, выставляет locked_until по LOCKOUT_SCHEDULE_MINUTES.
-    Коммит — на вызывающей стороне (вместе с записью в AuditLog LOGIN_FAILED)."""
-    user.failed_login_count += 1
-    over = user.failed_login_count - LOCKOUT_FREE_ATTEMPTS
-    if over > 0:
-        idx = min(over - 1, len(LOCKOUT_SCHEDULE_MINUTES) - 1)
-        minutes = LOCKOUT_SCHEDULE_MINUTES[idx]
-        user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-
-
-def record_successful_login(user: User) -> None:
-    user.failed_login_count = 0
-    user.locked_until = None
+def lockout_status(db: Session, user_id: int, ip: str | None) -> tuple[bool, int]:
+    """(заблокирован?, сколько секунд осталось) для пары (аккаунт, IP).
+    Ничего не хранит отдельно — считается каждый раз по журналу попыток,
+    в духе остального аудита в проекте (append-only, не мутируемый счётчик)."""
+    failures = _consecutive_failures(db, user_id, ip)
+    over = failures - LOCKOUT_FREE_ATTEMPTS
+    if over <= 0:
+        return False, 0
+    last_failed = (
+        db.query(LoginAttempt.created_at)
+        .filter(LoginAttempt.user_id == user_id, LoginAttempt.ip == ip, LoginAttempt.success.is_(False))
+        .order_by(LoginAttempt.created_at.desc())
+        .first()
+    )
+    if not last_failed:
+        return False, 0
+    idx = min(over - 1, len(LOCKOUT_SCHEDULE_MINUTES) - 1)
+    unlock_at = last_failed[0] + timedelta(minutes=LOCKOUT_SCHEDULE_MINUTES[idx])
+    now = datetime.now(timezone.utc)
+    if now < unlock_at:
+        return True, int((unlock_at - now).total_seconds())
+    return False, 0

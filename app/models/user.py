@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -23,9 +21,10 @@ class User(Base, TimestampMixin):
     # на /login — см. app/services/auth.py). NULL = пароль ещё не задан,
     # вход невозможен (не "пароль пустой" — пустых паролей не бывает).
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    # Защита от перебора пароля (app/services/auth.py: LOCKOUT_SCHEDULE).
-    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Блокировка после перебора пароля считается по app.models.login_attempt
+    # .LoginAttempt (пара аккаунт+IP), не хранится здесь — см. правку после
+    # разбора DeepSeek: блокировка по аккаунту целиком позволяла держать
+    # единственного Руководителя без доступа бесконечно с любого IP.
 
     created_requests: Mapped[list["Request"]] = relationship(
         "Request", foreign_keys="Request.created_by_id", back_populates="created_by"
